@@ -51,12 +51,23 @@ xcrun notarytool submit "$WORK/Sauron.zip" "${NOTARY_AUTH[@]}" --wait
 xcrun stapler staple Sauron.app
 
 # Package a drag-to-Applications DMG; notarize and staple that too.
+# Built read-write first so the volume gets the eye as its icon (the icon
+# lives inside the image and survives download; a custom icon on the .dmg
+# file itself would not — resource forks don't survive HTTP).
 STAGE="$WORK/stage"
 mkdir -p "$STAGE"
 cp -R Sauron.app "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 rm -f Sauron.dmg
-hdiutil create -volname "Sauron" -srcfolder "$STAGE" -ov -format UDZO Sauron.dmg
+hdiutil create -volname "Sauron" -srcfolder "$STAGE" -ov -format UDRW "$WORK/rw.dmg"
+MOUNT_DIR="$WORK/mnt"
+mkdir -p "$MOUNT_DIR"
+hdiutil attach "$WORK/rw.dmg" -readwrite -noverify -noautoopen -mountpoint "$MOUNT_DIR" > /dev/null
+cp .build/Sauron.icns "$MOUNT_DIR/.VolumeIcon.icns"
+xcrun SetFile -a C "$MOUNT_DIR"
+hdiutil detach "$MOUNT_DIR" > /dev/null
+hdiutil convert "$WORK/rw.dmg" -format UDZO -o Sauron.dmg > /dev/null
+echo "created Sauron.dmg with volume icon"
 codesign --force --timestamp --sign "$IDENTITY" Sauron.dmg
 xcrun notarytool submit Sauron.dmg "${NOTARY_AUTH[@]}" --wait
 xcrun stapler staple Sauron.dmg
