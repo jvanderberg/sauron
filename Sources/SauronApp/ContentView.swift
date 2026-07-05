@@ -44,25 +44,34 @@ struct ContentView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 10) {
-            Button("Scan Home") { model.scan(path: NSHomeDirectory()) }
-            Button("Scan Disk") { model.scan(path: "/System/Volumes/Data") }
-                .help("Scans the APFS Data volume — everything user-writable on the startup disk")
-            Button("Scan Folder…") { chooseFolder() }
-            if model.isScanning || model.isRescanning {
-                Button("Cancel") { model.cancelScan() }
+        HStack(spacing: 6) {
+            toolbarButton("house", help: "Scan your home folder") {
+                model.scan(path: NSHomeDirectory())
             }
-            Button {
-                model.rescanCurrent()
-            } label: {
+            toolbarButton("internaldrive", help: "Scan the startup disk — the APFS Data volume, everything user-writable") {
+                model.scan(path: "/System/Volumes/Data")
+            }
+            toolbarButton("folder", help: "Choose a folder to scan…") {
+                chooseFolder()
+            }
+            Divider().frame(height: 16)
+            Group {
                 if model.isRescanning {
                     ProgressView().controlSize(.small)
+                        .frame(width: 30, height: 24)
                 } else {
-                    Image(systemName: "arrow.clockwise")
+                    toolbarButton("arrow.clockwise", help: "Rescan the folder currently shown (fast — only this subtree)") {
+                        model.rescanCurrent()
+                    }
+                    .disabled(model.currentNode == nil || model.isScanning)
                 }
             }
-            .disabled(model.currentNode == nil || model.isScanning || model.isRescanning)
-            .help("Rescan the folder currently shown (fast — only this subtree)")
+            if model.isScanning || model.isRescanning {
+                toolbarButton("xmark.circle.fill", help: "Cancel the scan") {
+                    model.cancelScan()
+                }
+                .foregroundStyle(.secondary)
+            }
             Spacer()
             if let root = model.root, !model.isScanning {
                 Text("\(Format.bytes(model.size(of: root))) in \(friendlyName(model.scannedPath))")
@@ -78,7 +87,20 @@ struct ContentView: View {
                 }
             }
         }
-        .padding(10)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    private func toolbarButton(_ symbol: String, help: String,
+                               action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .medium))
+                .frame(width: 30, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .help(help)
     }
 
     private var breadcrumbs: some View {
