@@ -57,13 +57,24 @@ public enum Scanner {
 
         var root: FileNode?
         var stack: [FileNode] = []
-        var seenHardLinks = Set<HardLinkKey>()
+        var seenHardLinks = Set<InodeKey>()
+        var visitedDirs = Set<InodeKey>()
         var entryCount = 0
         var errorCount = 0
         var cancelled = false
 
+        // The stack is kept in sync with fts_level rather than trusting a
+        // strict FTS_D/FTS_DP pairing: fts can report a directory's
+        // post-order visit as FTS_ERR (or skip it entirely for pruned
+        // subtrees), and a single missed pop would silently re-parent the
+        // whole rest of the traversal under the wrong directory.
+        func unwind(to depth: Int) {
+            while stack.count > depth { stack.removeLast() }
+        }
+
         while let ent = fts_read(stream) {
             let info = Int32(ent.pointee.fts_info)
+            let level = Int(ent.pointee.fts_level)
             entryCount += 1
             if progressEvery > 0, entryCount % progressEvery == 0, let progress {
                 let current = String(cString: ent.pointee.fts_path)
@@ -75,6 +86,18 @@ public enum Scanner {
 
             switch info {
             case FTS_D:
+                unwind(to: level)
+                // Firmlinks and mount points can expose the same directory
+                // under several paths (e.g. /Users and
+                // /System/Volumes/Data/Users). Traverse each physical
+                // directory once; skip aliases.
+                if let st = ent.pointee.fts_statp {
+                    let key = InodeKey(dev: st.pointee.st_dev, ino: st.pointee.st_ino)
+                    if !visitedDirs.insert(key).inserted {
+                        _ = fts_set(stream, ent, FTS_SKIP)
+                        continue
+                    }
+                }
                 let own = physicalSize(ent)
                 lock?.lock()
                 let node = FileNode(
@@ -93,14 +116,16 @@ public enum Scanner {
                 stack.append(node)
 
             case FTS_DP:
-                _ = stack.popLast()
+                unwind(to: level + 1)
+                if stack.count == level + 1 { stack.removeLast() }
 
             case FTS_F, FTS_SL, FTS_SLNONE, FTS_DEFAULT:
+                unwind(to: level)
                 guard let parent = stack.last else { continue }
                 var size = physicalSize(ent)
                 if let st = ent.pointee.fts_statp, st.pointee.st_nlink > 1,
                    (st.pointee.st_mode & S_IFMT) == S_IFREG {
-                    let key = HardLinkKey(dev: st.pointee.st_dev, ino: st.pointee.st_ino)
+                    let key = InodeKey(dev: st.pointee.st_dev, ino: st.pointee.st_ino)
                     if !seenHardLinks.insert(key).inserted { size = 0 }
                 }
                 lock?.lock()
@@ -147,7 +172,7 @@ public enum Scanner {
         }
     }
 
-    private struct HardLinkKey: Hashable {
+    private struct InodeKey: Hashable {
         let dev: dev_t
         let ino: ino_t
     }

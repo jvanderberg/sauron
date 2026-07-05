@@ -33,6 +33,12 @@ make app        # build Sauron.app, then: open Sauron.app
   ↑ button navigate back out.
 - **⟳ Rescan** re-scans just the folder you're looking at and splices the
   fresh numbers into the tree — cheap truth-up after deletions, no full rescan.
+- **Switching scans never loses work.** Starting a new scan cancels the
+  current one; every tree (partial or complete) is cached. If earlier data
+  covers the new target — including through the `/System/Volumes/Data` ↔ `/`
+  firmlink alias, so a partial "Scan Disk" seeds a "Scan Home" — it shows
+  instantly while the fresh scan refreshes it in the background, then swaps
+  in with navigation, marks, and selection carried across.
 - The right panel lists everything marked, the total space it will free, and a
   **Move to Trash** button you can press at any time. Marking a folder absorbs
   any marked items inside it, so the total never double-counts.

@@ -30,9 +30,15 @@ final class AppModel: ObservableObject {
     @Published var actualFreeSpace: Int64 = 0
     @Published var optimisticFreeSpace: Int64?
 
+    // True while the map shows earlier (cached/partial) results and a fresh
+    // scan is refreshing them in the background.
+    @Published var showingCached = false
+
     let treeLock = NSLock()
     private let trashQueue = TrashQueue()
+    private let scanCache = ScanCache()
     private var cancelRequested = false
+    private var pendingScanPath: String?
     private var freeSpaceTimer: Timer?
     private var scanRefreshTimer: Timer?
 
@@ -82,19 +88,41 @@ final class AppModel: ObservableObject {
 
     // MARK: - Scanning
 
+    /// Start (or switch to) a scan. If one is already running it is
+    /// cancelled, its partial tree is cached, and the new scan starts as
+    /// soon as the cancellation lands.
     func scan(path: String) {
-        guard !isScanning else { return }
+        if isScanning {
+            pendingScanPath = path
+            cancelRequested = true
+            return
+        }
+        startScan(path: path)
+    }
+
+    private func startScan(path: String) {
         isScanning = true
         cancelRequested = false
         scanCount = 0
         scanErrors = 0
         scannedPath = path
-        root = nil
-        navigation = []
         selected = nil
         markedItems = []
         trashQueue.removeAll()
         lastError = nil
+
+        // Earlier results covering this path (including the partial tree of
+        // a scan the user just abandoned) display immediately; the fresh
+        // scan refreshes them in the background.
+        if let cached = scanCache.lookup(path: path) {
+            root = cached.node
+            navigation = [cached.node]
+            showingCached = true
+        } else {
+            root = nil
+            navigation = []
+            showingCached = false
+        }
         startScanRefreshTimer()
 
         Task.detached(priority: .userInitiated) { [weak self] in
@@ -106,7 +134,8 @@ final class AppModel: ObservableObject {
                     lock: self.treeLock,
                     onRootReady: { newRoot in
                         Task { @MainActor [weak self] in
-                            guard let self, self.isScanning, self.root == nil else { return }
+                            guard let self, self.isScanning, self.scannedPath == path,
+                                  !self.showingCached, self.root == nil else { return }
                             self.root = newRoot
                             self.navigation = [newRoot]
                         }
@@ -126,15 +155,7 @@ final class AppModel: ObservableObject {
                     }
                 )
                 await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    // onRootReady may not have landed for tiny scans.
-                    if self.root == nil {
-                        self.root = result.root
-                        self.navigation = [result.root]
-                    }
-                    self.scanCount = result.entryCount
-                    self.scanErrors = result.errorCount
-                    self.finishScan()
+                    self?.completeScan(result: result, path: path)
                 }
             } catch {
                 await MainActor.run { [weak self] in
@@ -149,11 +170,57 @@ final class AppModel: ObservableObject {
         cancelRequested = true
     }
 
+    private func completeScan(result: ScanResult, path: String) {
+        scanCount = result.entryCount
+        scanErrors = result.errorCount
+        scanCache.store(root: result.root, path: path, complete: !result.cancelled)
+
+        if showingCached {
+            if result.cancelled {
+                // The refresh was abandoned; keep showing the cached tree.
+                showingCached = false
+            } else {
+                swapToFreshTree(result.root)
+            }
+        } else if root == nil {
+            // onRootReady may not have landed for tiny scans.
+            root = result.root
+            navigation = [result.root]
+        }
+        finishScan()
+    }
+
+    /// Replace the displayed (cached) tree with the freshly scanned one,
+    /// carrying navigation, marks, and selection across by path.
+    private func swapToFreshTree(_ freshRoot: FileNode) {
+        let deepestNavPath = navigation.last?.path
+        let markedPaths = trashQueue.items.map(\.path)
+        let selectedPath = selected?.path
+
+        root = freshRoot
+        navigation = [freshRoot]
+        if let navPath = deepestNavPath, let node = Paths.find(navPath, in: freshRoot),
+           node.isDirectory {
+            navigation = node.ancestry
+        }
+        trashQueue.removeAll()
+        for path in markedPaths {
+            if let node = Paths.find(path, in: freshRoot) { trashQueue.add(node) }
+        }
+        markedItems = trashQueue.items
+        selected = selectedPath.flatMap { Paths.find($0, in: freshRoot) }
+        showingCached = false
+    }
+
     private func finishScan() {
         isScanning = false
         scanRefreshTimer?.invalidate()
         scanRefreshTimer = nil
         objectWillChange.send()
+        if let pending = pendingScanPath {
+            pendingScanPath = nil
+            startScan(path: pending)
+        }
     }
 
     /// While a scan runs, republish a few times a second so the treemap
@@ -208,7 +275,7 @@ final class AppModel: ObservableObject {
         trashQueue.removeAll()
         if let root {
             treeLock.lock()
-            let resolved = paths.compactMap { root.find(path: $0) }
+            let resolved = paths.compactMap { Paths.find($0, in: root) }
             treeLock.unlock()
             for node in resolved { trashQueue.add(node) }
         }
@@ -244,7 +311,9 @@ final class AppModel: ObservableObject {
     func isMarked(_ node: FileNode) -> Bool { trashQueue.covers(node) }
 
     func toggleMark(_ node: FileNode) {
-        guard !node.isRoot else { return }
+        // Never the tree root, and never the top of the current view (which
+        // can be a mid-tree node when displaying a cached subtree).
+        guard !node.isRoot, node !== navigation.first else { return }
         trashQueue.toggle(node)
         markedItems = trashQueue.items
     }

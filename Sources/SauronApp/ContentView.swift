@@ -4,6 +4,12 @@ import DiskCore
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
 
+    /// "/System/Volumes/Data" is where all user-writable data on the startup
+    /// disk actually lives; show a human name instead of the firmlink path.
+    private func friendlyName(_ path: String) -> String {
+        Paths.normalize(path) == "/" ? "Startup Disk (Data volume)" : path
+    }
+
     var body: some View {
         HSplitView {
             VStack(spacing: 0) {
@@ -56,7 +62,7 @@ struct ContentView: View {
             .help("Rescan the folder currently shown (fast — only this subtree)")
             Spacer()
             if let root = model.root, !model.isScanning {
-                Text("\(Format.bytes(root.size)) in \(model.scannedPath)")
+                Text("\(Format.bytes(model.size(of: root))) in \(friendlyName(model.scannedPath))")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -93,7 +99,7 @@ struct ContentView: View {
                         Button {
                             model.navigate(to: node)
                         } label: {
-                            Text(index == 0 ? node.name : node.name)
+                            Text(index == 0 ? friendlyName(node.path) : node.name)
                                 .fontWeight(index == model.navigation.count - 1 ? .semibold : .regular)
                         }
                         .buttonStyle(.plain)
@@ -116,7 +122,9 @@ struct ContentView: View {
     private var scanProgressStrip: some View {
         HStack(spacing: 8) {
             ProgressView().controlSize(.small)
-            Text("Scanning — \(model.scanCount.formatted()) items so far")
+            Text(model.showingCached
+                 ? "Refreshing — \(model.scanCount.formatted()) items so far"
+                 : "Scanning — \(model.scanCount.formatted()) items so far")
                 .font(.system(size: 11))
             Text(model.scanCurrentPath)
                 .font(.system(size: 11))
@@ -124,7 +132,7 @@ struct ContentView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
-            Text("map updates live")
+            Text(model.showingCached ? "showing earlier results" : "map updates live")
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
         }
