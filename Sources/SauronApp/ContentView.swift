@@ -20,11 +20,14 @@ struct ContentView: View {
                 if let current = model.currentNode {
                     breadcrumbs
                     Divider()
-                    if model.isScanning { scanProgressStrip }
+                    if model.isScanning {
+                        ScanProgressStrip(progress: model.scanProgress,
+                                          showingCached: model.showingCached)
+                    }
                     TreemapView(node: current)
                         .id(ObjectIdentifier(current))
                 } else if model.isScanning {
-                    scanningView
+                    ScanStartingView(progress: model.scanProgress)
                 } else {
                     emptyState
                 }
@@ -120,46 +123,6 @@ struct ContentView: View {
         .padding(.vertical, 6)
     }
 
-    /// Shown above the (live, growing) treemap while a scan is in flight.
-    private var scanProgressStrip: some View {
-        HStack(spacing: 8) {
-            ProgressView().controlSize(.small)
-            Text(model.showingCached
-                 ? "Refreshing — \(model.scanCount.formatted()) items so far"
-                 : "Scanning — \(model.scanCount.formatted()) items so far")
-                .font(.system(size: 11))
-            Text(model.scanCurrentPath)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer()
-            Text(model.showingCached ? "showing earlier results" : "map updates live")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(Color.accentColor.opacity(0.08))
-    }
-
-    private var scanningView: some View {
-        VStack(spacing: 12) {
-            Spacer()
-            ProgressView()
-            Text("Scanned \(model.scanCount.formatted()) items…")
-                .font(.headline)
-            Text(model.scanCurrentPath)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: 500)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity)
-    }
-
     private var emptyState: some View {
         VStack(spacing: 8) {
             Spacer()
@@ -185,5 +148,57 @@ struct ContentView: View {
         if panel.runModal() == .OK, let url = panel.url {
             model.scan(path: url.path)
         }
+    }
+}
+
+/// Shown above the (live, growing) treemap while a scan is in flight.
+/// Observes ScanProgress directly so its ~10Hz counter updates don't
+/// re-render the treemap (which refreshes on the model's 0.5Hz tick).
+private struct ScanProgressStrip: View {
+    @ObservedObject var progress: ScanProgress
+    let showingCached: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(showingCached
+                 ? "Refreshing — \(progress.count.formatted()) items so far"
+                 : "Scanning — \(progress.count.formatted()) items so far")
+                .font(.system(size: 11))
+            Text(progress.currentPath)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            Text(showingCached ? "showing earlier results" : "map updates live")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(Color.accentColor.opacity(0.08))
+    }
+}
+
+/// Full-pane progress while a scan hasn't produced a root node yet.
+private struct ScanStartingView: View {
+    @ObservedObject var progress: ScanProgress
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            ProgressView()
+            Text("Scanned \(progress.count.formatted()) items…")
+                .font(.headline)
+            Text(progress.currentPath)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 500)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
     }
 }

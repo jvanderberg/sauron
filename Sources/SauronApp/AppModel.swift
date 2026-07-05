@@ -1,6 +1,15 @@
 import SwiftUI
 import DiskCore
 
+/// High-frequency scan telemetry, deliberately separated from AppModel:
+/// only the progress strip observes it, so its ~10Hz updates don't force
+/// treemap re-renders. The map itself refreshes on AppModel's 0.5Hz tick.
+@MainActor
+final class ScanProgress: ObservableObject {
+    @Published var count = 0
+    @Published var currentPath = ""
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     // Scan state. The tree is rendered *while* the scan runs: the scanner
@@ -9,10 +18,10 @@ final class AppModel: ObservableObject {
     @Published var root: FileNode?
     @Published var isScanning = false
     @Published var isRescanning = false
-    @Published var scanCount = 0
-    @Published var scanCurrentPath = ""
     @Published var scanErrors = 0
     @Published var scannedPath = ""
+
+    let scanProgress = ScanProgress()
 
     // Navigation: breadcrumb stack, root first. Empty when nothing scanned.
     @Published var navigation: [FileNode] = []
@@ -103,7 +112,8 @@ final class AppModel: ObservableObject {
     private func startScan(path: String) {
         isScanning = true
         cancelRequested = false
-        scanCount = 0
+        scanProgress.count = 0
+        scanProgress.currentPath = ""
         scanErrors = 0
         scannedPath = path
         selected = nil
@@ -145,8 +155,8 @@ final class AppModel: ObservableObject {
                         if now.timeIntervalSince(lastUpdate) > 0.1 {
                             lastUpdate = now
                             Task { @MainActor [weak self] in
-                                self?.scanCount = count
-                                self?.scanCurrentPath = current
+                                self?.scanProgress.count = count
+                                self?.scanProgress.currentPath = current
                             }
                         }
                         var cancelled = false
@@ -171,7 +181,7 @@ final class AppModel: ObservableObject {
     }
 
     private func completeScan(result: ScanResult, path: String) {
-        scanCount = result.entryCount
+        scanProgress.count = result.entryCount
         scanErrors = result.errorCount
         scanCache.store(root: result.root, path: path, complete: !result.cancelled)
 
@@ -371,7 +381,9 @@ final class AppModel: ObservableObject {
 
     func refreshFreeSpace() {
         let free = Volume.freeSpace() ?? 0
-        actualFreeSpace = free
+        // Assign only on change: every @Published write re-renders all
+        // observers, and this runs on a 5s timer.
+        if actualFreeSpace != free { actualFreeSpace = free }
         if let optimistic = optimisticFreeSpace, free >= optimistic {
             optimisticFreeSpace = nil
         }
