@@ -5,6 +5,10 @@ the whole Data volume), see where the space went as an explorable, animated
 heat map, drill into any level, hunt the biggest files, mark things for the
 trash, and free the space.
 
+**[⬇ Download the latest release](https://github.com/jvanderberg/sauron/releases/latest)**
+— signed & notarized `Sauron.dmg`; drag to Applications and go.
+([direct link](https://github.com/jvanderberg/sauron/releases/latest/download/Sauron.dmg))
+
 ![Sauron exploring Application Support](docs/screenshot.png)
 *(exploring ~/Library/Application Support — the hatched red tile and the panel
 on the right are items marked for the trash, 13 GB ready to free)*
