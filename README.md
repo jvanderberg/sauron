@@ -68,6 +68,25 @@ control Finder. In-app help: **⌘?** or the Help menu.
 - `scripts/make_icon.swift` — the app icon, drawn with Core Graphics at build
   time (`make app` bakes the .icns). No binary assets in the repo.
 
+## Distributing
+
+`make dist` produces a signed, notarized, stapled `Sauron.dmg` that anyone can
+download, drag to Applications, and open without Gatekeeper friction.
+One-time setup (needs an Apple Developer Program membership):
+
+1. Install a **Developer ID Application** certificate in your keychain
+   (developer.apple.com → Certificates; create the CSR with Keychain Access →
+   Certificate Assistant — no Xcode needed).
+2. Store notary credentials, using an app-specific password from
+   appleid.apple.com:
+   ```sh
+   xcrun notarytool store-credentials sauron-notary \
+     --apple-id you@example.com --team-id YOURTEAMID
+   ```
+
+The script signs with hardened runtime plus the Apple-Events entitlement
+(needed for Empty Trash), notarizes and staples both the app and the DMG.
+
 ## Testing
 
 ```sh

@@ -20,5 +20,8 @@ run:
 app:
 	./scripts/make_app.sh
 
+dist:
+	./scripts/make_dist.sh
+
 clean:
-	rm -rf .build Sauron.app
+	rm -rf .build Sauron.app Sauron.dmg
