@@ -32,14 +32,27 @@ struct TreemapView: View {
     @EnvironmentObject var model: AppModel
     let node: FileNode
 
+    /// Owns the redraw timer so it dies with the view.
+    private final class DisplayTimer {
+        var timer: Timer?
+        func stop() {
+            timer?.invalidate()
+            timer = nil
+        }
+        deinit { timer?.invalidate() }
+    }
+
     @State private var hovered: FileNode?
     @State private var targets: [TreemapTile] = []
     @State private var origins: [ObjectIdentifier: CGRect] = [:]
     @State private var animStart = Date.distantPast
-    @State private var isAnimating = false
     @State private var lastSize = CGSize.zero
     @State private var duration: TimeInterval = 1.0
     @State private var lastNode: FileNode?
+    @State private var animationTick = 0
+    @State private var displayTimer = DisplayTimer()
+    @State private var lastClickTime = Date.distantPast
+    @State private var lastClickLocation = CGPoint.zero
 
     private static let maxTiles = 600
     /// Slow breathe for in-scan reflows; quick zoom for navigation.
@@ -49,23 +62,34 @@ struct TreemapView: View {
     var body: some View {
         VStack(spacing: 0) {
             GeometryReader { geo in
-                TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isAnimating)) { timeline in
-                    canvas(frames: displayedFrames(at: timeline.date, size: geo.size))
-                }
+                // Read the tick so timer-driven redraws invalidate this body.
+                // Drawing always samples real time (Date()), and the ramp
+                // clamps at its end — so even a missed redraw can never
+                // freeze the map; the next one lands on the final layout.
+                let _ = animationTick
+                canvas(frames: displayedFrames(at: Date(), size: geo.size))
                 .gesture(
-                    // One handler for every click, disambiguated by AppKit's
-                    // click count. An ExclusiveGesture(double, single) would
-                    // delay the single tap ~300ms to rule out a double-click,
-                    // during which ⌫ acts on the PREVIOUS selection. Here the
-                    // first click selects instantly (Finder-style) and the
-                    // second click of a double-click drills.
+                    // One handler for every click. An ExclusiveGesture(double,
+                    // single) would delay the single tap ~300ms to rule out a
+                    // double-click, during which ⌫ acts on the PREVIOUS
+                    // selection. Here the first click selects instantly
+                    // (Finder-style) and the second click drills. Double
+                    // detection uses AppKit's clickCount with a manual
+                    // time+distance fallback.
                     SpatialTapGesture(count: 1).onEnded { value in
-                        let clicks = NSApp.currentEvent?.clickCount ?? 1
+                        let now = Date()
+                        let sysClicks = NSApp.currentEvent?.clickCount ?? 1
+                        let isDouble = sysClicks >= 2
+                            || (now.timeIntervalSince(lastClickTime) < 0.45
+                                && hypot(value.location.x - lastClickLocation.x,
+                                         value.location.y - lastClickLocation.y) < 5)
+                        lastClickTime = now
+                        lastClickLocation = value.location
                         guard let frame = hitTest(at: value.location, size: geo.size) else {
-                            if clicks == 1 { model.select(nil) }
+                            if !isDouble { model.select(nil) }
                             return
                         }
-                        if clicks >= 2 {
+                        if isDouble {
                             model.drillDown(into: frame.tile.node)
                         } else {
                             model.select(frame.tile.node)
@@ -97,8 +121,9 @@ struct TreemapView: View {
                     // objectWillChange fires before the mutation lands; read
                     // the new tree state on the next runloop turn.
                     DispatchQueue.main.async {
-                        // Navigation is handled by navigationRelayout.
-                        guard lastNode === node else { return }
+                        // Navigation transitions are handled (with zoom) by
+                        // navigationRelayout; skip ticks that race it.
+                        guard lastNode === model.currentNode else { return }
                         relayout(size: lastSize, animated: true)
                     }
                 }
@@ -109,7 +134,7 @@ struct TreemapView: View {
 
     // MARK: - Layout & animation
 
-    private func computeTargets(in size: CGSize) -> [TreemapTile] {
+    private func computeTargets(for node: FileNode, in size: CGSize) -> [TreemapTile] {
         guard size.width > 0, size.height > 0 else { return [] }
         let snapshot = model.childrenSnapshot(of: node)
         guard !snapshot.isEmpty else { return [] }
@@ -126,7 +151,12 @@ struct TreemapView: View {
     }
 
     private func relayout(size: CGSize, animated: Bool) {
-        let newTargets = computeTargets(in: size)
+        // Handlers can run from closures captured by an earlier body
+        // evaluation, where `node` is stale (one navigation behind). The
+        // model is a class reference and always current — layout must key
+        // off it, never the captured struct.
+        let current = model.currentNode ?? node
+        let newTargets = computeTargets(for: current, in: size)
         guard newTargets != targets else { return }
         if animated, !targets.isEmpty {
             // Current interpolated positions become the starting points, so
@@ -135,10 +165,7 @@ struct TreemapView: View {
             for frame in interpolatedFrames(at: Date()) { current[frame.tile.id] = frame.rect }
             beginAnimation(to: newTargets, origins: current, duration: Self.reflowDuration)
         } else {
-            origins = [:]
-            animStart = .distantPast
-            targets = newTargets
-            isAnimating = false
+            setInstantly(newTargets)
         }
     }
 
@@ -146,28 +173,28 @@ struct TreemapView: View {
     /// clicked tile's rect into the whole view; going up collapses the view
     /// back into the tile it lives in at the parent level.
     private func navigationRelayout(size: CGSize) {
+        // Same staleness hazard as relayout(): resolve the level to display
+        // from the model, not from the captured `node`.
+        let current = model.currentNode ?? node
         let previous = lastNode
-        lastNode = node
+        lastNode = current
         hovered = nil
-        let newTargets = computeTargets(in: size)
-        guard let previous, previous !== node, !targets.isEmpty, !newTargets.isEmpty,
+        let newTargets = computeTargets(for: current, in: size)
+        guard let previous, previous !== current, !targets.isEmpty, !newTargets.isEmpty,
               size.width > 0, size.height > 0
         else {
-            origins = [:]
-            animStart = .distantPast
-            targets = newTargets
-            isAnimating = false
+            setInstantly(newTargets)
             return
         }
 
-        if node.isDescendant(of: previous),
+        if current.isDescendant(of: previous),
            let container = interpolatedFrames(at: Date())
-               .first(where: { node.isDescendant(of: $0.tile.node) })?.rect {
+               .first(where: { current.isDescendant(of: $0.tile.node) })?.rect {
             // Down: new level starts squeezed inside the clicked tile.
             var starts: [ObjectIdentifier: CGRect] = [:]
             for tile in newTargets { starts[tile.id] = squeeze(tile.rect, into: container, viewport: size) }
             beginAnimation(to: newTargets, origins: starts, duration: Self.zoomDuration)
-        } else if previous.isDescendant(of: node),
+        } else if previous.isDescendant(of: current),
                   let container = newTargets.first(where: { previous.isDescendant(of: $0.node) })?.rect {
             // Up: new level starts magnified so the tile we're leaving fills
             // the viewport, then settles to identity.
@@ -176,11 +203,16 @@ struct TreemapView: View {
             beginAnimation(to: newTargets, origins: starts, duration: Self.zoomDuration)
         } else {
             // Unrelated levels (new scan, cache swap): no zoom.
-            origins = [:]
-            animStart = .distantPast
-            targets = newTargets
-            isAnimating = false
+            setInstantly(newTargets)
         }
+    }
+
+    private func setInstantly(_ newTargets: [TreemapTile]) {
+        displayTimer.stop()
+        origins = [:]
+        animStart = .distantPast
+        targets = newTargets
+        animationTick &+= 1
     }
 
     private func beginAnimation(to newTargets: [TreemapTile],
@@ -190,12 +222,17 @@ struct TreemapView: View {
         duration = newDuration
         animStart = Date()
         targets = newTargets
-        isAnimating = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + newDuration + 0.05) {
-            if Date().timeIntervalSince(animStart) >= newDuration {
-                isAnimating = false
-            }
+        // A plain repeating timer forces redraws for the transition window,
+        // then invalidates itself. No pausable clock, no flag hand-off: the
+        // draw path reads Date() directly, so state can't wedge.
+        displayTimer.stop()
+        let deadline = animStart.addingTimeInterval(newDuration + 0.1)
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { timer in
+            Task { @MainActor in animationTick &+= 1 }
+            if Date() >= deadline { timer.invalidate() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        displayTimer.timer = timer
     }
 
     /// Map a full-viewport rect down into `container` (drill-down start).
@@ -236,7 +273,8 @@ struct TreemapView: View {
     /// empty (first frame, or offscreen rendering where onAppear never ran).
     private func displayedFrames(at date: Date, size: CGSize) -> [TileFrame] {
         if targets.isEmpty {
-            return computeTargets(in: size).map { TileFrame(tile: $0, rect: $0.rect, opacity: 1) }
+            return computeTargets(for: model.currentNode ?? node, in: size)
+                .map { TileFrame(tile: $0, rect: $0.rect, opacity: 1) }
         }
         return interpolatedFrames(at: date)
     }
