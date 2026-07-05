@@ -63,12 +63,20 @@ struct LargestFilesView: View {
             Text("Files ≥ \(Format.bytes(cutoff))")
                 .font(.system(size: 12, weight: .semibold).monospacedDigit())
                 .frame(width: 130, alignment: .leading)
-            Slider(value: $detentIndex, in: 0...Double(Self.detents.count - 1), step: 1) {
+            // Quantize in the binding rather than using step: — stepped
+            // NSSliders get the flat tick-marked track that looks disabled.
+            Slider(
+                value: Binding(
+                    get: { detentIndex },
+                    set: { detentIndex = $0.rounded() }
+                ),
+                in: 0...Double(Self.detents.count - 1)
+            ) {
                 EmptyView()
             } minimumValueLabel: {
-                Text("10 MB").font(.system(size: 9)).foregroundStyle(.tertiary)
+                Text("10 MB").font(.system(size: 9)).foregroundStyle(.secondary)
             } maximumValueLabel: {
-                Text("500 GB").font(.system(size: 9)).foregroundStyle(.tertiary)
+                Text("500 GB").font(.system(size: 9)).foregroundStyle(.secondary)
             }
             .frame(maxWidth: 340)
             Spacer()
