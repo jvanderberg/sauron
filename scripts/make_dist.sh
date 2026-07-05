@@ -10,6 +10,9 @@
 #
 # Then just: make dist
 # Override with IDENTITY="Developer ID Application: ..." NOTARY_PROFILE=name
+#
+# CI mode: instead of a keychain profile, set NOTARY_APPLE_ID,
+# NOTARY_PASSWORD (app-specific password), and NOTARY_TEAM_ID.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -24,6 +27,14 @@ if [ -z "$IDENTITY" ]; then
 fi
 echo "signing as: $IDENTITY"
 
+if [ -n "${NOTARY_APPLE_ID:-}" ]; then
+    NOTARY_AUTH=(--apple-id "$NOTARY_APPLE_ID" --password "$NOTARY_PASSWORD" --team-id "$NOTARY_TEAM_ID")
+    echo "notarizing as: $NOTARY_APPLE_ID ($NOTARY_TEAM_ID)"
+else
+    NOTARY_AUTH=(--keychain-profile "$PROFILE")
+    echo "notarizing with keychain profile: $PROFILE"
+fi
+
 ./scripts/make_app.sh
 
 # Sign with hardened runtime + the Apple Events entitlement (Empty Trash).
@@ -36,7 +47,7 @@ codesign --verify --strict --verbose=2 Sauron.app
 WORK="$(mktemp -d /tmp/sauron-dist.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 ditto -c -k --keepParent Sauron.app "$WORK/Sauron.zip"
-xcrun notarytool submit "$WORK/Sauron.zip" --keychain-profile "$PROFILE" --wait
+xcrun notarytool submit "$WORK/Sauron.zip" "${NOTARY_AUTH[@]}" --wait
 xcrun stapler staple Sauron.app
 
 # Package a drag-to-Applications DMG; notarize and staple that too.
@@ -47,7 +58,7 @@ ln -s /Applications "$STAGE/Applications"
 rm -f Sauron.dmg
 hdiutil create -volname "Sauron" -srcfolder "$STAGE" -ov -format UDZO Sauron.dmg
 codesign --force --timestamp --sign "$IDENTITY" Sauron.dmg
-xcrun notarytool submit Sauron.dmg --keychain-profile "$PROFILE" --wait
+xcrun notarytool submit Sauron.dmg "${NOTARY_AUTH[@]}" --wait
 xcrun stapler staple Sauron.dmg
 
 echo ""

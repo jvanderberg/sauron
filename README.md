@@ -87,6 +87,14 @@ One-time setup (needs an Apple Developer Program membership):
 The script signs with hardened runtime plus the Apple-Events entitlement
 (needed for Empty Trash), notarizes and staples both the app and the DMG.
 
+### Releases via CI
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`: tests + smoke, then
+`make dist` on a macOS runner, then a GitHub Release with the notarized DMG
+attached. Requires five repository secrets: `DEVELOPER_ID_P12` (base64 .p12
+of the signing identity), `DEVELOPER_ID_P12_PASSWORD`, `NOTARY_APPLE_ID`,
+`NOTARY_PASSWORD` (app-specific), and `NOTARY_TEAM_ID`.
+
 ## Testing
 
 ```sh
