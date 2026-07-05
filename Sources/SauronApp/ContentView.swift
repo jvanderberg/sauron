@@ -42,10 +42,15 @@ struct ContentView: View {
             .frame(minWidth: 600, minHeight: 400)
             // Drop a folder anywhere in the window to scan it.
             .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted) { providers in
+                // The scan started by the drop rebuilds the view under the
+                // drag, so the system never delivers the "exited" that would
+                // clear isTargeted — clear it ourselves.
+                DispatchQueue.main.async { isDropTargeted = false }
                 guard let provider = providers.first else { return false }
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
                     guard let url else { return }
                     Task { @MainActor in
+                        isDropTargeted = false
                         var isDirectory: ObjCBool = false
                         guard FileManager.default.fileExists(atPath: url.path,
                                                              isDirectory: &isDirectory) else { return }
