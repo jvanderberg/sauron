@@ -223,11 +223,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// While a scan runs, republish a few times a second so the treemap
-    /// re-reads the (growing) tree.
+    /// While a scan runs, republish at 0.5 Hz so the treemap re-reads the
+    /// (growing) tree; the view animates each update.
     private func startScanRefreshTimer() {
         scanRefreshTimer?.invalidate()
-        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.objectWillChange.send() }
         }
         RunLoop.main.add(timer, forMode: .common)

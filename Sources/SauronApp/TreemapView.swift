@@ -14,35 +14,27 @@ struct TreemapView: View {
 
     @State private var hovered: FileNode?
 
+    /// More tiles than this are invisible slivers anyway; keeping the view
+    /// count bounded keeps animated updates cheap.
+    private static let maxTiles = 600
+    private let tileAnimation = Animation.easeInOut(duration: 1.0)
+
     var body: some View {
         VStack(spacing: 0) {
             GeometryReader { geo in
                 let tiles = computeTiles(in: geo.size)
-                canvas(tiles: tiles)
-                    .gesture(
-                        ExclusiveGesture(
-                            SpatialTapGesture(count: 2).onEnded { value in
-                                if let tile = hitTest(tiles, value.location) {
-                                    model.drillDown(into: tile.node)
-                                }
-                            },
-                            SpatialTapGesture(count: 1).onEnded { value in
-                                model.select(hitTest(tiles, value.location)?.node)
-                            }
-                        )
-                    )
-                    .onContinuousHover { phase in
-                        switch phase {
-                        case .active(let location):
-                            hovered = hitTest(tiles, location)?.node
-                        case .ended:
-                            hovered = nil
-                        }
+                ZStack(alignment: .topLeading) {
+                    ForEach(tiles) { tile in
+                        tileView(tile, maxSize: tiles.first?.size ?? 1)
                     }
-                    .contextMenu {
-                        contextMenuItems()
-                    }
+                }
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+                .background(Color(nsColor: .underPageBackgroundColor))
+                // Drives insert/remove transitions when the set of tiles
+                // changes between scan refreshes.
+                .animation(tileAnimation, value: tiles.map(\.id))
             }
+            .clipped()
             statusBar
         }
     }
@@ -52,82 +44,58 @@ struct TreemapView: View {
         guard !snapshot.isEmpty else { return [] }
         let bounds = CGRect(origin: .zero, size: size)
         let rects = Treemap.layout(values: snapshot.map { Double($0.size) }, in: bounds)
-        return zip(snapshot, rects).compactMap { entry, rect in
-            guard rect.width >= 1, rect.height >= 1 else { return nil }
-            return TreemapTile(id: ObjectIdentifier(entry.node), node: entry.node,
-                               size: entry.size, rect: rect)
+        var tiles: [TreemapTile] = []
+        tiles.reserveCapacity(min(snapshot.count, Self.maxTiles))
+        for (entry, rect) in zip(snapshot, rects) {
+            guard rect.width >= 1.5, rect.height >= 1.5 else { continue }
+            tiles.append(TreemapTile(id: ObjectIdentifier(entry.node), node: entry.node,
+                                     size: entry.size, rect: rect))
+            if tiles.count >= Self.maxTiles { break }
         }
-    }
-
-    private func hitTest(_ tiles: [TreemapTile], _ point: CGPoint) -> TreemapTile? {
-        tiles.first { $0.rect.contains(point) }
-    }
-
-    private func canvas(tiles: [TreemapTile]) -> some View {
-        let maxSize = tiles.first?.size ?? 1
-        return Canvas { context, _ in
-            for tile in tiles {
-                let inset = tile.rect.insetBy(dx: 0.5, dy: 0.5)
-                guard inset.width > 0, inset.height > 0 else { continue }
-                let isMarked = model.isMarked(tile.node)
-                let isSelected = model.selected === tile.node
-                let isHovered = hovered === tile.node
-
-                var color = heatColor(size: tile.size, maxSize: maxSize,
-                                      isDirectory: tile.node.isDirectory)
-                if isMarked { color = Color(hue: 0, saturation: 0.85, brightness: 0.75) }
-                let shape = Path(roundedRect: inset, cornerRadius: 2)
-                context.fill(shape, with: .color(color))
-
-                if isMarked {
-                    // Diagonal hatching so marked tiles read as "condemned"
-                    // even next to naturally hot (orange) tiles.
-                    context.drawLayer { layer in
-                        layer.clip(to: shape)
-                        var hatch = Path()
-                        var x = inset.minX - inset.height
-                        while x < inset.maxX {
-                            hatch.move(to: CGPoint(x: x, y: inset.maxY))
-                            hatch.addLine(to: CGPoint(x: x + inset.height, y: inset.minY))
-                            x += 10
-                        }
-                        layer.stroke(hatch, with: .color(.white.opacity(0.35)), lineWidth: 2)
-                    }
-                    context.stroke(shape, with: .color(.red), lineWidth: 2)
-                }
-                if isHovered {
-                    context.stroke(shape, with: .color(.white.opacity(0.7)), lineWidth: 1.5)
-                }
-                if isSelected {
-                    context.stroke(shape, with: .color(.white), lineWidth: 3)
-                }
-
-                if inset.width > 60 && inset.height > 24 {
-                    let name = tile.node.isDirectory ? tile.node.name + "/" : tile.node.name
-                    let text = Text("\(name)\n\(Format.bytes(tile.size))")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.white)
-                    context.draw(
-                        context.resolve(text),
-                        in: inset.insetBy(dx: 4, dy: 3)
-                    )
-                }
-            }
-        }
-        .background(Color(nsColor: .underPageBackgroundColor))
+        return tiles
     }
 
     @ViewBuilder
-    private func contextMenuItems() -> some View {
-        if let target = hovered ?? model.selected {
-            Button(model.isMarked(target) ? "Unmark \"\(target.name)\"" : "Mark \"\(target.name)\" for Trash") {
-                model.toggleMark(target)
+    private func tileView(_ tile: TreemapTile, maxSize: Int64) -> some View {
+        let inset = tile.rect.insetBy(dx: 0.5, dy: 0.5)
+        let isMarked = model.isMarked(tile.node)
+        TileBody(
+            name: tile.node.isDirectory ? tile.node.name + "/" : tile.node.name,
+            sizeText: Format.bytes(tile.size),
+            color: isMarked
+                ? Color(hue: 0, saturation: 0.85, brightness: 0.75)
+                : heatColor(size: tile.size, maxSize: maxSize, isDirectory: tile.node.isDirectory),
+            isMarked: isMarked,
+            isSelected: model.selected === tile.node,
+            isHovered: hovered === tile.node,
+            showLabel: inset.width > 60 && inset.height > 24
+        )
+        .frame(width: max(inset.width, 1), height: max(inset.height, 1))
+        .position(x: inset.midX, y: inset.midY)
+        .animation(tileAnimation, value: tile.rect)
+        .transition(.opacity)
+        .onHover { inside in
+            if inside {
+                hovered = tile.node
+            } else if hovered === tile.node {
+                hovered = nil
             }
-            if target.isDirectory && model.hasChildren(target) {
-                Button("Open \"\(target.name)\"") { model.drillDown(into: target) }
+        }
+        .gesture(
+            ExclusiveGesture(
+                TapGesture(count: 2).onEnded { model.drillDown(into: tile.node) },
+                TapGesture(count: 1).onEnded { model.select(tile.node) }
+            )
+        )
+        .contextMenu {
+            Button(isMarked ? "Unmark \"\(tile.node.name)\"" : "Mark \"\(tile.node.name)\" for Trash") {
+                model.toggleMark(tile.node)
+            }
+            if tile.node.isDirectory && model.hasChildren(tile.node) {
+                Button("Open \"\(tile.node.name)\"") { model.drillDown(into: tile.node) }
             }
             Button("Reveal in Finder") {
-                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: target.path)])
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: tile.node.path)])
             }
         }
     }
@@ -176,5 +144,62 @@ struct TreemapView: View {
         let hue = 0.62 - 0.54 * t
         return Color(hue: hue, saturation: isDirectory ? 0.65 : 0.45,
                      brightness: isDirectory ? 0.80 : 0.70)
+    }
+}
+
+/// A single treemap tile. Kept dumb (all state passed in) so SwiftUI can
+/// animate frame/position/color changes cheaply.
+private struct TileBody: View {
+    let name: String
+    let sizeText: String
+    let color: Color
+    let isMarked: Bool
+    let isSelected: Bool
+    let isHovered: Bool
+    let showLabel: Bool
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 2).fill(color)
+
+            if isMarked {
+                // Diagonal hatching so marked tiles read as "condemned"
+                // even next to naturally hot (orange) tiles.
+                Canvas { context, size in
+                    var hatch = Path()
+                    var x = -size.height
+                    while x < size.width {
+                        hatch.move(to: CGPoint(x: x, y: size.height))
+                        hatch.addLine(to: CGPoint(x: x + size.height, y: 0))
+                        x += 10
+                    }
+                    context.stroke(hatch, with: .color(.white.opacity(0.35)), lineWidth: 2)
+                }
+                .allowsHitTesting(false)
+            }
+
+            if showLabel {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(name).lineLimit(1)
+                    Text(sizeText)
+                }
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.white)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 3)
+                .allowsHitTesting(false)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 2))
+        .overlay {
+            if isMarked {
+                RoundedRectangle(cornerRadius: 2).stroke(Color.red, lineWidth: 2)
+            }
+            if isSelected {
+                RoundedRectangle(cornerRadius: 2).stroke(Color.white, lineWidth: 3)
+            } else if isHovered {
+                RoundedRectangle(cornerRadius: 2).stroke(Color.white.opacity(0.7), lineWidth: 1.5)
+            }
+        }
     }
 }
