@@ -74,7 +74,7 @@ struct TrashPanel: View {
                     )
                     .frame(maxWidth: .infinity)
                 }
-                .disabled(model.markedItems.isEmpty || model.isTrashing)
+                .disabled(model.markedItems.isEmpty || model.isTrashing || model.isRescanning)
 
                 Divider()
 

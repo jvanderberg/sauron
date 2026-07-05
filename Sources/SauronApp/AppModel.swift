@@ -48,6 +48,9 @@ final class AppModel: ObservableObject {
     private let scanCache = ScanCache()
     private var cancelRequested = false
     private var pendingScanPath: String?
+    // Marked paths captured at scan start, re-resolved against the finished
+    // tree so a same-path refresh doesn't wipe the trash list.
+    private var stashedMarkedPaths: [String] = []
     private var freeSpaceTimer: Timer?
     private var scanRefreshTimer: Timer?
 
@@ -117,6 +120,7 @@ final class AppModel: ObservableObject {
         scanErrors = 0
         scannedPath = path
         selected = nil
+        stashedMarkedPaths = trashQueue.items.map(\.path)
         markedItems = []
         trashQueue.removeAll()
         lastError = nil
@@ -197,14 +201,17 @@ final class AppModel: ObservableObject {
             root = result.root
             navigation = [result.root]
         }
+        // Restore marks (stashed at scan start) against whatever tree we
+        // ended up with; marks whose paths vanished are dropped.
+        rebuildQueue(fromPaths: stashedMarkedPaths)
+        stashedMarkedPaths = []
         finishScan()
     }
 
     /// Replace the displayed (cached) tree with the freshly scanned one,
-    /// carrying navigation, marks, and selection across by path.
+    /// carrying navigation and selection across by path.
     private func swapToFreshTree(_ freshRoot: FileNode) {
         let deepestNavPath = navigation.last?.path
-        let markedPaths = trashQueue.items.map(\.path)
         let selectedPath = selected?.path
 
         root = freshRoot
@@ -213,11 +220,6 @@ final class AppModel: ObservableObject {
            node.isDirectory {
             navigation = node.ancestry
         }
-        trashQueue.removeAll()
-        for path in markedPaths {
-            if let node = Paths.find(path, in: freshRoot) { trashQueue.add(node) }
-        }
-        markedItems = trashQueue.items
         selected = selectedPath.flatMap { Paths.find($0, in: freshRoot) }
         showingCached = false
     }
@@ -251,22 +253,49 @@ final class AppModel: ObservableObject {
     /// or external changes, without redoing the whole root.
     func rescanCurrent() {
         guard let node = currentNode, node.isDirectory, !isScanning, !isRescanning else { return }
+        // Rescanning the scan root IS a full scan — route it through the
+        // real thing so it gets the live map, progress strip, cancellation,
+        // and cached display instead of a mute spinner for minutes.
+        if node === root {
+            scan(path: scannedPath)
+            return
+        }
         isRescanning = true
+        cancelRequested = false
+        scanProgress.count = 0
+        scanProgress.currentPath = ""
         lastError = nil
         let path = node.path
         let markedPaths = trashQueue.items.map(\.path)
 
         Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            var lastUpdate = Date.distantPast
             do {
-                let result = try DiskCore.Scanner.scan(path: path)
+                let result = try DiskCore.Scanner.scan(path: path, progress: { count, current in
+                    let now = Date()
+                    if now.timeIntervalSince(lastUpdate) > 0.1 {
+                        lastUpdate = now
+                        Task { @MainActor [weak self] in
+                            self?.scanProgress.count = count
+                            self?.scanProgress.currentPath = current
+                        }
+                    }
+                    var cancelled = false
+                    DispatchQueue.main.sync { cancelled = self.cancelRequested }
+                    return !cancelled
+                })
                 await MainActor.run { [weak self] in
                     guard let self else { return }
+                    defer { self.isRescanning = false }
+                    // A cancelled rescan is discarded: splicing a partial
+                    // tree in would understate sizes.
+                    guard !result.cancelled else { return }
                     self.treeLock.lock()
                     node.replaceContents(with: result.root)
                     self.treeLock.unlock()
                     self.rebuildQueue(fromPaths: markedPaths)
                     self.selected = nil
-                    self.isRescanning = false
                     self.objectWillChange.send()
                 }
             } catch {
@@ -336,7 +365,8 @@ final class AppModel: ObservableObject {
     }
 
     func moveMarkedToTrash() {
-        guard !trashQueue.isEmpty, !isTrashing else { return }
+        // Not during a rescan: the splice would resurrect just-trashed nodes.
+        guard !trashQueue.isEmpty, !isTrashing, !isRescanning else { return }
         isTrashing = true
         lastError = nil
         let items = trashQueue.items.map { (node: $0, path: $0.path) }

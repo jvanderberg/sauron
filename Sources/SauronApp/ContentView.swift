@@ -20,9 +20,8 @@ struct ContentView: View {
                 if let current = model.currentNode {
                     breadcrumbs
                     Divider()
-                    if model.isScanning {
-                        ScanProgressStrip(progress: model.scanProgress,
-                                          showingCached: model.showingCached)
+                    if model.isScanning || model.isRescanning {
+                        ScanProgressStrip(progress: model.scanProgress, mode: stripMode)
                     }
                     TreemapView(node: current)
                         .id(ObjectIdentifier(current))
@@ -51,7 +50,7 @@ struct ContentView: View {
             Button("Scan Disk") { model.scan(path: "/System/Volumes/Data") }
                 .help("Scans the APFS Data volume — everything user-writable on the startup disk")
             Button("Scan Folder…") { chooseFolder() }
-            if model.isScanning {
+            if model.isScanning || model.isRescanning {
                 Button("Cancel") { model.cancelScan() }
             }
             Button {
@@ -123,6 +122,11 @@ struct ContentView: View {
         .padding(.vertical, 6)
     }
 
+    private var stripMode: ScanProgressStrip.Mode {
+        if model.isRescanning { return .rescanning }
+        return model.showingCached ? .refreshing : .scanning
+    }
+
     private var emptyState: some View {
         VStack(spacing: 8) {
             Spacer()
@@ -154,16 +158,32 @@ struct ContentView: View {
 /// Shown above the (live, growing) treemap while a scan is in flight.
 /// Observes ScanProgress directly so its ~10Hz counter updates don't
 /// re-render the treemap (which refreshes on the model's 0.5Hz tick).
-private struct ScanProgressStrip: View {
+struct ScanProgressStrip: View {
+    enum Mode { case scanning, refreshing, rescanning }
+
     @ObservedObject var progress: ScanProgress
-    let showingCached: Bool
+    let mode: Mode
+
+    private var title: String {
+        switch mode {
+        case .scanning: return "Scanning — \(progress.count.formatted()) items so far"
+        case .refreshing: return "Refreshing — \(progress.count.formatted()) items so far"
+        case .rescanning: return "Rescanning folder — \(progress.count.formatted()) items so far"
+        }
+    }
+
+    private var trailing: String {
+        switch mode {
+        case .scanning: return "map updates live"
+        case .refreshing: return "showing earlier results"
+        case .rescanning: return "updates when finished"
+        }
+    }
 
     var body: some View {
         HStack(spacing: 8) {
             ProgressView().controlSize(.small)
-            Text(showingCached
-                 ? "Refreshing — \(progress.count.formatted()) items so far"
-                 : "Scanning — \(progress.count.formatted()) items so far")
+            Text(title)
                 .font(.system(size: 11))
             Text(progress.currentPath)
                 .font(.system(size: 11))
@@ -171,7 +191,7 @@ private struct ScanProgressStrip: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
-            Text(showingCached ? "showing earlier results" : "map updates live")
+            Text(trailing)
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
         }
