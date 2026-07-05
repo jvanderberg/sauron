@@ -1,10 +1,9 @@
 # Sauron
 
-One treemap to find them all. A macOS disk-usage explorer: scan a folder (or the
-whole Data volume), see where the space went as an explorable, animated heat
-map, drill into any level, hunt the biggest files, mark things for the trash,
-and free the space — all without Xcode. Pure SwiftPM, zero dependencies, even
-the app icon is rendered in code.
+One treemap to find them all. A macOS disk-usage explorer: scan a folder (or
+the whole Data volume), see where the space went as an explorable, animated
+heat map, drill into any level, hunt the biggest files, mark things for the
+trash, and free the space.
 
 ![Sauron exploring Application Support](docs/screenshot.png)
 *(exploring ~/Library/Application Support — the hatched red tile and the panel
@@ -58,6 +57,9 @@ directories. The first Empty Trash triggers a one-time automation prompt to
 control Finder. In-app help: **⌘?** or the Help menu.
 
 ## Architecture
+
+Plain SwiftPM — no Xcode project, no dependencies. `swift build` and a
+Makefile do everything, including rendering the app icon from code.
 
 - `Sources/DiskCore` — all logic, zero UI: fts(3)-based scanner, squarified
   treemap layout, largest-files query, scan cache with firmlink path aliasing,
