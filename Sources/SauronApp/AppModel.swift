@@ -77,7 +77,8 @@ final class AppModel: ObservableObject {
     init() {
         refreshFreeSpace()
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshFreeSpace() }
+            guard let self else { return }
+            Task { @MainActor in self.refreshFreeSpace() }
         }
         RunLoop.main.add(timer, forMode: .common)
         freeSpaceTimer = timer
@@ -254,7 +255,8 @@ final class AppModel: ObservableObject {
     private func startScanRefreshTimer() {
         scanRefreshTimer?.invalidate()
         let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.objectWillChange.send() }
+            guard let self else { return }
+            Task { @MainActor in self.objectWillChange.send() }
         }
         RunLoop.main.add(timer, forMode: .common)
         scanRefreshTimer = timer
