@@ -38,9 +38,13 @@ struct TreemapView: View {
     @State private var animStart = Date.distantPast
     @State private var isAnimating = false
     @State private var lastSize = CGSize.zero
+    @State private var duration: TimeInterval = 1.0
+    @State private var lastNode: FileNode?
 
     private static let maxTiles = 600
-    private static let animDuration: TimeInterval = 1.0
+    /// Slow breathe for in-scan reflows; quick zoom for navigation.
+    private static let reflowDuration: TimeInterval = 1.0
+    private static let zoomDuration: TimeInterval = 0.3
 
     var body: some View {
         VStack(spacing: 0) {
@@ -79,16 +83,24 @@ struct TreemapView: View {
                 .contextMenu { contextMenuItems() }
                 .onAppear {
                     lastSize = geo.size
+                    lastNode = node
                     relayout(size: geo.size, animated: false)
                 }
                 .onChange(of: geo.size) { newSize in
                     lastSize = newSize
                     relayout(size: newSize, animated: false)
                 }
+                .onChange(of: ObjectIdentifier(node)) { _ in
+                    navigationRelayout(size: lastSize)
+                }
                 .onReceive(model.objectWillChange) { _ in
                     // objectWillChange fires before the mutation lands; read
                     // the new tree state on the next runloop turn.
-                    DispatchQueue.main.async { relayout(size: lastSize, animated: true) }
+                    DispatchQueue.main.async {
+                        // Navigation is handled by navigationRelayout.
+                        guard lastNode === node else { return }
+                        relayout(size: lastSize, animated: true)
+                    }
                 }
             }
             statusBar
@@ -117,20 +129,11 @@ struct TreemapView: View {
         let newTargets = computeTargets(in: size)
         guard newTargets != targets else { return }
         if animated, !targets.isEmpty {
-            let now = Date()
             // Current interpolated positions become the starting points, so
             // an update landing mid-animation continues smoothly.
             var current: [ObjectIdentifier: CGRect] = [:]
-            for frame in interpolatedFrames(at: now) { current[frame.tile.id] = frame.rect }
-            origins = current
-            animStart = now
-            targets = newTargets
-            isAnimating = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.animDuration + 0.05) {
-                if Date().timeIntervalSince(animStart) >= Self.animDuration {
-                    isAnimating = false
-                }
-            }
+            for frame in interpolatedFrames(at: Date()) { current[frame.tile.id] = frame.rect }
+            beginAnimation(to: newTargets, origins: current, duration: Self.reflowDuration)
         } else {
             origins = [:]
             animStart = .distantPast
@@ -139,8 +142,85 @@ struct TreemapView: View {
         }
     }
 
+    /// Zoom transition between navigation levels: drilling down expands the
+    /// clicked tile's rect into the whole view; going up collapses the view
+    /// back into the tile it lives in at the parent level.
+    private func navigationRelayout(size: CGSize) {
+        let previous = lastNode
+        lastNode = node
+        hovered = nil
+        let newTargets = computeTargets(in: size)
+        guard let previous, previous !== node, !targets.isEmpty, !newTargets.isEmpty,
+              size.width > 0, size.height > 0
+        else {
+            origins = [:]
+            animStart = .distantPast
+            targets = newTargets
+            isAnimating = false
+            return
+        }
+
+        if node.isDescendant(of: previous),
+           let container = interpolatedFrames(at: Date())
+               .first(where: { node.isDescendant(of: $0.tile.node) })?.rect {
+            // Down: new level starts squeezed inside the clicked tile.
+            var starts: [ObjectIdentifier: CGRect] = [:]
+            for tile in newTargets { starts[tile.id] = squeeze(tile.rect, into: container, viewport: size) }
+            beginAnimation(to: newTargets, origins: starts, duration: Self.zoomDuration)
+        } else if previous.isDescendant(of: node),
+                  let container = newTargets.first(where: { previous.isDescendant(of: $0.node) })?.rect {
+            // Up: new level starts magnified so the tile we're leaving fills
+            // the viewport, then settles to identity.
+            var starts: [ObjectIdentifier: CGRect] = [:]
+            for tile in newTargets { starts[tile.id] = magnify(tile.rect, from: container, viewport: size) }
+            beginAnimation(to: newTargets, origins: starts, duration: Self.zoomDuration)
+        } else {
+            // Unrelated levels (new scan, cache swap): no zoom.
+            origins = [:]
+            animStart = .distantPast
+            targets = newTargets
+            isAnimating = false
+        }
+    }
+
+    private func beginAnimation(to newTargets: [TreemapTile],
+                                origins newOrigins: [ObjectIdentifier: CGRect],
+                                duration newDuration: TimeInterval) {
+        origins = newOrigins
+        duration = newDuration
+        animStart = Date()
+        targets = newTargets
+        isAnimating = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + newDuration + 0.05) {
+            if Date().timeIntervalSince(animStart) >= newDuration {
+                isAnimating = false
+            }
+        }
+    }
+
+    /// Map a full-viewport rect down into `container` (drill-down start).
+    private func squeeze(_ rect: CGRect, into container: CGRect, viewport: CGSize) -> CGRect {
+        let sx = container.width / viewport.width
+        let sy = container.height / viewport.height
+        return CGRect(x: container.minX + rect.minX * sx,
+                      y: container.minY + rect.minY * sy,
+                      width: rect.width * sx,
+                      height: rect.height * sy)
+    }
+
+    /// Scale the viewport up so `container` fills it (drill-up start).
+    private func magnify(_ rect: CGRect, from container: CGRect, viewport: CGSize) -> CGRect {
+        guard container.width > 0, container.height > 0 else { return rect }
+        let sx = viewport.width / container.width
+        let sy = viewport.height / container.height
+        return CGRect(x: (rect.minX - container.minX) * sx,
+                      y: (rect.minY - container.minY) * sy,
+                      width: rect.width * sx,
+                      height: rect.height * sy)
+    }
+
     private func interpolatedFrames(at date: Date) -> [TileFrame] {
-        let raw = date.timeIntervalSince(animStart) / Self.animDuration
+        let raw = date.timeIntervalSince(animStart) / max(duration, 0.001)
         let t = max(0, min(1, raw))
         let eased = t * t * (3 - 2 * t)
         return targets.map { tile in

@@ -24,7 +24,6 @@ struct ContentView: View {
                         ScanProgressStrip(progress: model.scanProgress, mode: stripMode)
                     }
                     TreemapView(node: current)
-                        .id(ObjectIdentifier(current))
                 } else if model.isScanning {
                     ScanStartingView(progress: model.scanProgress)
                 } else {
@@ -166,9 +165,9 @@ struct ScanProgressStrip: View {
 
     private var title: String {
         switch mode {
-        case .scanning: return "Scanning — \(progress.count.formatted()) items so far"
-        case .refreshing: return "Refreshing — \(progress.count.formatted()) items so far"
-        case .rescanning: return "Rescanning folder — \(progress.count.formatted()) items so far"
+        case .scanning: return "Scanning · \(progress.count.formatted()) items"
+        case .refreshing: return "Refreshing · \(progress.count.formatted()) items"
+        case .rescanning: return "Rescanning · \(progress.count.formatted()) items"
         }
     }
 
@@ -183,17 +182,22 @@ struct ScanProgressStrip: View {
     var body: some View {
         HStack(spacing: 8) {
             ProgressView().controlSize(.small)
+            // Monospaced digits in a fixed-width slot: the growing count
+            // must not push the path around every 100ms.
             Text(title)
-                .font(.system(size: 11))
+                .font(.system(size: 11).monospacedDigit())
+                .lineLimit(1)
+                .frame(width: 210, alignment: .leading)
             Text(progress.currentPath)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
             Text(trailing)
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
+                .fixedSize()
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
