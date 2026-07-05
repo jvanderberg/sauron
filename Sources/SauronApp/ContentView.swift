@@ -1,9 +1,11 @@
 import SwiftUI
 import DiskCore
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
+    @State private var isDropTargeted = false
 
     /// "/System/Volumes/Data" is where all user-writable data on the startup
     /// disk actually lives; show a human name instead of the firmlink path.
@@ -38,6 +40,37 @@ struct ContentView: View {
                 }
             }
             .frame(minWidth: 600, minHeight: 400)
+            // Drop a folder anywhere in the window to scan it.
+            .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted) { providers in
+                guard let provider = providers.first else { return false }
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { @MainActor in
+                        var isDirectory: ObjCBool = false
+                        guard FileManager.default.fileExists(atPath: url.path,
+                                                             isDirectory: &isDirectory) else { return }
+                        model.scan(path: isDirectory.boolValue
+                                   ? url.path
+                                   : url.deletingLastPathComponent().path)
+                    }
+                }
+                return true
+            }
+            .overlay {
+                if isDropTargeted {
+                    ZStack {
+                        Color.accentColor.opacity(0.08)
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(Color.accentColor, lineWidth: 3)
+                            .padding(6)
+                        Label("Drop to scan", systemImage: "square.and.arrow.down")
+                            .font(.title3.weight(.semibold))
+                            .padding(12)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    }
+                    .allowsHitTesting(false)
+                }
+            }
 
             TrashPanel()
         }
@@ -121,6 +154,7 @@ struct ContentView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
+        .focusable(false)
         .help(help)
     }
 
@@ -170,12 +204,27 @@ struct ContentView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 26) {
             Spacer()
-            Image(systemName: "internaldrive")
-                .font(.system(size: 48))
-                .foregroundStyle(.tertiary)
-            Text("Scan a location to see where your disk space went.")
+            Text("Where did the space go?")
+                .font(.title2.bold())
+            HStack(spacing: 16) {
+                scanChoice("house", "Scan Home",
+                           "Your user folder — downloads, projects, caches, and everything else you own.") {
+                    model.scan(path: NSHomeDirectory())
+                }
+                scanChoice("internaldrive", "Scan Disk",
+                           "The whole startup disk (Data volume) — everything user-writable on this Mac.") {
+                    model.scan(path: "/System/Volumes/Data")
+                }
+                scanChoice("folder", "Scan a Folder…",
+                           "Pick any folder to analyze just that corner of the disk.") {
+                    chooseFolder()
+                }
+            }
+            Label("…or drop a folder anywhere in this window",
+                  systemImage: "square.and.arrow.down")
+                .font(.callout)
                 .foregroundStyle(.secondary)
             Text("Sizes are physical (allocated) bytes — sparse files show their real footprint.")
                 .font(.system(size: 11))
@@ -183,6 +232,36 @@ struct ContentView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private func scanChoice(_ symbol: String, _ title: String, _ detail: String,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .font(.system(size: 34, weight: .light))
+                    .foregroundStyle(Color.accentColor)
+                Text(title)
+                    .font(.headline)
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .frame(width: 190, height: 160)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.primary.opacity(0.08))
+            )
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
     }
 
     private func chooseFolder() {
