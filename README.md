@@ -6,8 +6,9 @@ map, drill into any level, hunt the biggest files, mark things for the trash,
 and free the space — all without Xcode. Pure SwiftPM, zero dependencies, even
 the app icon is rendered in code.
 
-![Treemap render](docs/screenshot.png)
-*(headless render of the treemap — the hatched red tile is marked for the trash)*
+![Sauron exploring Application Support](docs/screenshot.png)
+*(exploring ~/Library/Application Support — the hatched red tile and the panel
+on the right are items marked for the trash, 13 GB ready to free)*
 
 ## What it measures
 
