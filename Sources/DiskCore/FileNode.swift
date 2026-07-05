@@ -58,6 +58,37 @@ public final class FileNode {
         for c in children { c.sortBySize() }
     }
 
+    /// Find the node with the given absolute path in this subtree, matching
+    /// by path components. Returns nil if it doesn't exist (anymore).
+    public func find(path target: String) -> FileNode? {
+        let own = path
+        if target == own { return self }
+        let prefix = own.hasSuffix("/") ? own : own + "/"
+        guard target.hasPrefix(prefix) else { return nil }
+        var node = self
+        for component in target.dropFirst(prefix.count).split(separator: "/") {
+            guard let next = node.children.first(where: { $0.name == component }) else { return nil }
+            node = next
+        }
+        return node
+    }
+
+    /// Adopt the children and size of a freshly rescanned copy of this same
+    /// directory, propagating the size delta to every ancestor. Used for
+    /// subtree rescans: the node's identity (and the navigation stack
+    /// pointing at it) survives; its contents are replaced.
+    public func replaceContents(with other: FileNode) {
+        let delta = other.size - size
+        children = other.children
+        for child in children { child.parent = self }
+        size = other.size
+        var node = parent
+        while let n = node {
+            n.size += delta
+            node = n.parent
+        }
+    }
+
     /// Detach this node from the tree, subtracting its size from every
     /// ancestor. Used after a successful move-to-trash.
     public func removeFromParent() {

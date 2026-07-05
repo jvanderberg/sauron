@@ -9,13 +9,14 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 toolbar
                 Divider()
-                if model.isScanning {
-                    scanningView
-                } else if let current = model.currentNode {
+                if let current = model.currentNode {
                     breadcrumbs
                     Divider()
+                    if model.isScanning { scanProgressStrip }
                     TreemapView(node: current)
                         .id(ObjectIdentifier(current))
+                } else if model.isScanning {
+                    scanningView
                 } else {
                     emptyState
                 }
@@ -42,6 +43,17 @@ struct ContentView: View {
             if model.isScanning {
                 Button("Cancel") { model.cancelScan() }
             }
+            Button {
+                model.rescanCurrent()
+            } label: {
+                if model.isRescanning {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .disabled(model.currentNode == nil || model.isScanning || model.isRescanning)
+            .help("Rescan the folder currently shown (fast — only this subtree)")
             Spacer()
             if let root = model.root, !model.isScanning {
                 Text("\(Format.bytes(root.size)) in \(model.scannedPath)")
@@ -91,13 +103,34 @@ struct ContentView: View {
             }
             Spacer()
             if let current = model.currentNode {
-                Text(Format.bytes(current.size))
+                Text(Format.bytes(model.size(of: current)))
                     .font(.system(size: 11, weight: .semibold))
             }
         }
         .font(.system(size: 12))
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+    }
+
+    /// Shown above the (live, growing) treemap while a scan is in flight.
+    private var scanProgressStrip: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Scanning — \(model.scanCount.formatted()) items so far")
+                .font(.system(size: 11))
+            Text(model.scanCurrentPath)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            Text("map updates live")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(Color.accentColor.opacity(0.08))
     }
 
     private var scanningView: some View {

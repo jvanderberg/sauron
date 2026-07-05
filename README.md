@@ -25,9 +25,14 @@ make app        # build Sauron.app, then: open Sauron.app
 - **Scan Home / Scan Disk / Scan Folder…** — "Scan Disk" scans
   `/System/Volumes/Data`, which is everything user-writable on the startup
   disk. (Scanning `/` on modern macOS only shows the sealed system volume.)
-- **Click** a tile to mark/unmark it for the trash. **Double-click** a
-  directory to drill in. **Right-click** for mark / open / reveal in Finder.
-  Breadcrumbs and the ↑ button navigate back out.
+  The map appears immediately and **updates live while the scan runs** — the
+  big offenders dominate within seconds; explore without waiting.
+- **Click** selects a tile. **⌫** (or the status-bar button, or right-click)
+  marks the selection for the trash — marking is always an explicit act, never
+  a stray click. **Double-click** a directory to drill in; breadcrumbs and the
+  ↑ button navigate back out.
+- **⟳ Rescan** re-scans just the folder you're looking at and splices the
+  fresh numbers into the tree — cheap truth-up after deletions, no full rescan.
 - The right panel lists everything marked, the total space it will free, and a
   **Move to Trash** button you can press at any time. Marking a folder absorbs
   any marked items inside it, so the total never double-counts.

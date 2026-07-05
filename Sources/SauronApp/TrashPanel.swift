@@ -36,7 +36,7 @@ struct TrashPanel: View {
                                     .truncationMode(.middle)
                             }
                             Spacer()
-                            Text(Format.bytes(item.size))
+                            Text(Format.bytes(model.size(of: item)))
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                             Button {

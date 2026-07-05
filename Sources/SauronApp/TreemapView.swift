@@ -4,6 +4,7 @@ import DiskCore
 struct TreemapTile: Identifiable {
     let id: ObjectIdentifier
     let node: FileNode
+    let size: Int64
     let rect: CGRect
 }
 
@@ -12,13 +13,12 @@ struct TreemapView: View {
     let node: FileNode
 
     @State private var hovered: FileNode?
-    @State private var hoverLocation: CGPoint = .zero
 
     var body: some View {
         VStack(spacing: 0) {
             GeometryReader { geo in
                 let tiles = computeTiles(in: geo.size)
-                canvas(tiles: tiles, size: geo.size)
+                canvas(tiles: tiles)
                     .gesture(
                         ExclusiveGesture(
                             SpatialTapGesture(count: 2).onEnded { value in
@@ -27,23 +27,20 @@ struct TreemapView: View {
                                 }
                             },
                             SpatialTapGesture(count: 1).onEnded { value in
-                                if let tile = hitTest(tiles, value.location) {
-                                    model.toggleMark(tile.node)
-                                }
+                                model.select(hitTest(tiles, value.location)?.node)
                             }
                         )
                     )
                     .onContinuousHover { phase in
                         switch phase {
                         case .active(let location):
-                            hoverLocation = location
                             hovered = hitTest(tiles, location)?.node
                         case .ended:
                             hovered = nil
                         }
                     }
                     .contextMenu {
-                        contextMenuItems(tiles: tiles)
+                        contextMenuItems()
                     }
             }
             statusBar
@@ -51,13 +48,14 @@ struct TreemapView: View {
     }
 
     private func computeTiles(in size: CGSize) -> [TreemapTile] {
-        let children = node.children
-        guard !children.isEmpty else { return [] }
+        let snapshot = model.childrenSnapshot(of: node)
+        guard !snapshot.isEmpty else { return [] }
         let bounds = CGRect(origin: .zero, size: size)
-        let rects = Treemap.layout(values: children.map { Double($0.size) }, in: bounds)
-        return zip(children, rects).compactMap { child, rect in
+        let rects = Treemap.layout(values: snapshot.map { Double($0.size) }, in: bounds)
+        return zip(snapshot, rects).compactMap { entry, rect in
             guard rect.width >= 1, rect.height >= 1 else { return nil }
-            return TreemapTile(id: ObjectIdentifier(child), node: child, rect: rect)
+            return TreemapTile(id: ObjectIdentifier(entry.node), node: entry.node,
+                               size: entry.size, rect: rect)
         }
     }
 
@@ -65,16 +63,17 @@ struct TreemapView: View {
         tiles.first { $0.rect.contains(point) }
     }
 
-    private func canvas(tiles: [TreemapTile], size: CGSize) -> some View {
-        let maxSize = node.children.first?.size ?? 1
+    private func canvas(tiles: [TreemapTile]) -> some View {
+        let maxSize = tiles.first?.size ?? 1
         return Canvas { context, _ in
             for tile in tiles {
                 let inset = tile.rect.insetBy(dx: 0.5, dy: 0.5)
                 guard inset.width > 0, inset.height > 0 else { continue }
                 let isMarked = model.isMarked(tile.node)
+                let isSelected = model.selected === tile.node
                 let isHovered = hovered === tile.node
 
-                var color = heatColor(size: tile.node.size, maxSize: maxSize,
+                var color = heatColor(size: tile.size, maxSize: maxSize,
                                       isDirectory: tile.node.isDirectory)
                 if isMarked { color = Color(hue: 0, saturation: 0.85, brightness: 0.75) }
                 let shape = Path(roundedRect: inset, cornerRadius: 2)
@@ -97,14 +96,17 @@ struct TreemapView: View {
                     context.stroke(shape, with: .color(.red), lineWidth: 2)
                 }
                 if isHovered {
-                    context.stroke(shape, with: .color(.white), lineWidth: 2)
+                    context.stroke(shape, with: .color(.white.opacity(0.7)), lineWidth: 1.5)
+                }
+                if isSelected {
+                    context.stroke(shape, with: .color(.white), lineWidth: 3)
                 }
 
                 if inset.width > 60 && inset.height > 24 {
                     let name = tile.node.isDirectory ? tile.node.name + "/" : tile.node.name
-                    var text = Text("\(name)\n\(Format.bytes(tile.node.size))")
+                    let text = Text("\(name)\n\(Format.bytes(tile.size))")
                         .font(.system(size: 10, weight: .medium))
-                    text = text.foregroundColor(.white)
+                        .foregroundColor(.white)
                     context.draw(
                         context.resolve(text),
                         in: inset.insetBy(dx: 4, dy: 3)
@@ -116,12 +118,12 @@ struct TreemapView: View {
     }
 
     @ViewBuilder
-    private func contextMenuItems(tiles: [TreemapTile]) -> some View {
-        if let target = hovered {
+    private func contextMenuItems() -> some View {
+        if let target = hovered ?? model.selected {
             Button(model.isMarked(target) ? "Unmark \"\(target.name)\"" : "Mark \"\(target.name)\" for Trash") {
                 model.toggleMark(target)
             }
-            if target.isDirectory && !target.children.isEmpty {
+            if target.isDirectory && model.hasChildren(target) {
                 Button("Open \"\(target.name)\"") { model.drillDown(into: target) }
             }
             Button("Reveal in Finder") {
@@ -132,26 +134,36 @@ struct TreemapView: View {
 
     private var statusBar: some View {
         HStack(spacing: 8) {
-            if let hovered {
-                Text(hovered.path)
+            if let subject = hovered ?? model.selected {
+                Text(subject.path)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Spacer()
-                if node.size > 0 {
-                    Text(String(format: "%.1f%%", Double(hovered.size) / Double(node.size) * 100))
+                let parentSize = model.size(of: node)
+                if parentSize > 0 {
+                    Text(String(format: "%.1f%%", Double(model.size(of: subject)) / Double(parentSize) * 100))
                         .foregroundStyle(.secondary)
                 }
-                Text(Format.bytes(hovered.size))
+                Text(Format.bytes(model.size(of: subject)))
                     .fontWeight(.semibold)
             } else {
-                Text("Click to mark for trash · double-click to drill in · right-click for more")
+                Text("Click to select · double-click to open · right-click for more")
                     .foregroundStyle(.secondary)
-                Spacer()
+            }
+            Spacer()
+            if let selected = model.selected {
+                Button(model.isMarked(selected)
+                       ? "Unmark  ⌫"
+                       : "Mark for Trash  ⌫") {
+                    model.toggleMark(selected)
+                }
+                .keyboardShortcut(.delete, modifiers: [])
+                .controlSize(.small)
             }
         }
         .font(.system(size: 11))
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
+        .frame(minHeight: 28)
         .background(.bar)
     }
 

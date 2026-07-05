@@ -3,9 +3,12 @@ import DiskCore
 
 @MainActor
 final class AppModel: ObservableObject {
-    // Scan state
+    // Scan state. The tree is rendered *while* the scan runs: the scanner
+    // mutates it under `treeLock`, and all UI reads go through the
+    // snapshot/size accessors below, which take the same lock.
     @Published var root: FileNode?
     @Published var isScanning = false
+    @Published var isRescanning = false
     @Published var scanCount = 0
     @Published var scanCurrentPath = ""
     @Published var scanErrors = 0
@@ -13,6 +16,9 @@ final class AppModel: ObservableObject {
 
     // Navigation: breadcrumb stack, root first. Empty when nothing scanned.
     @Published var navigation: [FileNode] = []
+
+    // Selection (single click). Marking for trash is a separate, explicit act.
+    @Published var selected: FileNode?
 
     // Trash queue
     @Published var markedItems: [FileNode] = []
@@ -24,13 +30,13 @@ final class AppModel: ObservableObject {
     @Published var actualFreeSpace: Int64 = 0
     @Published var optimisticFreeSpace: Int64?
 
+    let treeLock = NSLock()
     private let trashQueue = TrashQueue()
     private var cancelRequested = false
     private var freeSpaceTimer: Timer?
+    private var scanRefreshTimer: Timer?
 
     var currentNode: FileNode? { navigation.last }
-
-    var markedTotal: Int64 { trashQueue.totalSize }
 
     var displayedFreeSpace: Int64 {
         max(actualFreeSpace, optimisticFreeSpace ?? 0)
@@ -45,6 +51,35 @@ final class AppModel: ObservableObject {
         freeSpaceTimer = timer
     }
 
+    // MARK: - Locked tree accessors (safe during a live scan)
+
+    /// Children of a node with their sizes captured atomically, sorted
+    /// largest-first. The single source the treemap renders from.
+    func childrenSnapshot(of node: FileNode) -> [(node: FileNode, size: Int64)] {
+        treeLock.lock()
+        let pairs = node.children.map { (node: $0, size: $0.size) }
+        treeLock.unlock()
+        return pairs.sorted { $0.size > $1.size }
+    }
+
+    func size(of node: FileNode) -> Int64 {
+        treeLock.lock()
+        defer { treeLock.unlock() }
+        return node.size
+    }
+
+    func hasChildren(_ node: FileNode) -> Bool {
+        treeLock.lock()
+        defer { treeLock.unlock() }
+        return !node.children.isEmpty
+    }
+
+    var markedTotal: Int64 {
+        treeLock.lock()
+        defer { treeLock.unlock() }
+        return trashQueue.totalSize
+    }
+
     // MARK: - Scanning
 
     func scan(path: String) {
@@ -56,38 +91,55 @@ final class AppModel: ObservableObject {
         scannedPath = path
         root = nil
         navigation = []
+        selected = nil
         markedItems = []
         trashQueue.removeAll()
         lastError = nil
+        startScanRefreshTimer()
 
         Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
             var lastUpdate = Date.distantPast
             do {
-                let result = try Scanner.scan(path: path) { count, current in
-                    let now = Date()
-                    if now.timeIntervalSince(lastUpdate) > 0.1 {
-                        lastUpdate = now
+                let result = try DiskCore.Scanner.scan(
+                    path: path,
+                    lock: self.treeLock,
+                    onRootReady: { newRoot in
                         Task { @MainActor [weak self] in
-                            self?.scanCount = count
-                            self?.scanCurrentPath = current
+                            guard let self, self.isScanning, self.root == nil else { return }
+                            self.root = newRoot
+                            self.navigation = [newRoot]
                         }
+                    },
+                    progress: { count, current in
+                        let now = Date()
+                        if now.timeIntervalSince(lastUpdate) > 0.1 {
+                            lastUpdate = now
+                            Task { @MainActor [weak self] in
+                                self?.scanCount = count
+                                self?.scanCurrentPath = current
+                            }
+                        }
+                        var cancelled = false
+                        DispatchQueue.main.sync { cancelled = self.cancelRequested }
+                        return !cancelled
                     }
-                    var cancelled = false
-                    DispatchQueue.main.sync { cancelled = self?.cancelRequested ?? true }
-                    return !cancelled
-                }
+                )
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    self.root = result.root
-                    self.navigation = [result.root]
+                    // onRootReady may not have landed for tiny scans.
+                    if self.root == nil {
+                        self.root = result.root
+                        self.navigation = [result.root]
+                    }
                     self.scanCount = result.entryCount
                     self.scanErrors = result.errorCount
-                    self.isScanning = false
+                    self.finishScan()
                 }
             } catch {
                 await MainActor.run { [weak self] in
                     self?.lastError = "Scan failed: \(error)"
-                    self?.isScanning = false
+                    self?.finishScan()
                 }
             }
         }
@@ -97,22 +149,97 @@ final class AppModel: ObservableObject {
         cancelRequested = true
     }
 
+    private func finishScan() {
+        isScanning = false
+        scanRefreshTimer?.invalidate()
+        scanRefreshTimer = nil
+        objectWillChange.send()
+    }
+
+    /// While a scan runs, republish a few times a second so the treemap
+    /// re-reads the (growing) tree.
+    private func startScanRefreshTimer() {
+        scanRefreshTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.objectWillChange.send() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        scanRefreshTimer = timer
+    }
+
+    // MARK: - Subtree rescan
+
+    /// Re-scan just the folder currently being viewed and splice the fresh
+    /// result into the tree — cheap way to true-up numbers after deletions
+    /// or external changes, without redoing the whole root.
+    func rescanCurrent() {
+        guard let node = currentNode, node.isDirectory, !isScanning, !isRescanning else { return }
+        isRescanning = true
+        lastError = nil
+        let path = node.path
+        let markedPaths = trashQueue.items.map(\.path)
+
+        Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                let result = try DiskCore.Scanner.scan(path: path)
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.treeLock.lock()
+                    node.replaceContents(with: result.root)
+                    self.treeLock.unlock()
+                    self.rebuildQueue(fromPaths: markedPaths)
+                    self.selected = nil
+                    self.isRescanning = false
+                    self.objectWillChange.send()
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.lastError = "Rescan failed: \(error)"
+                    self?.isRescanning = false
+                }
+            }
+        }
+    }
+
+    /// Marked nodes inside a rescanned subtree are stale objects; re-resolve
+    /// every marked path against the current tree and drop the ones that no
+    /// longer exist.
+    private func rebuildQueue(fromPaths paths: [String]) {
+        trashQueue.removeAll()
+        if let root {
+            treeLock.lock()
+            let resolved = paths.compactMap { root.find(path: $0) }
+            treeLock.unlock()
+            for node in resolved { trashQueue.add(node) }
+        }
+        markedItems = trashQueue.items
+    }
+
     // MARK: - Navigation
 
     func drillDown(into node: FileNode) {
-        guard node.isDirectory, !node.children.isEmpty else { return }
+        guard node.isDirectory, hasChildren(node) else { return }
+        selected = nil
         navigation.append(node)
     }
 
     func navigate(to node: FileNode) {
+        selected = nil
         navigation = node.ancestry
     }
 
     func navigateUp() {
-        if navigation.count > 1 { navigation.removeLast() }
+        if navigation.count > 1 {
+            selected = nil
+            navigation.removeLast()
+        }
     }
 
-    // MARK: - Trash queue
+    // MARK: - Selection & trash queue
+
+    func select(_ node: FileNode?) {
+        selected = node
+    }
 
     func isMarked(_ node: FileNode) -> Bool { trashQueue.covers(node) }
 
@@ -154,8 +281,13 @@ final class AppModel: ObservableObject {
                     while let current = self.navigation.last, current.isDescendant(of: node) {
                         self.navigation.removeLast()
                     }
+                    if let sel = self.selected, sel.isDescendant(of: node) {
+                        self.selected = nil
+                    }
                     self.trashQueue.remove(node)
+                    self.treeLock.lock()
                     node.removeFromParent()
+                    self.treeLock.unlock()
                 }
                 self.markedItems = self.trashQueue.items
                 self.isTrashing = false

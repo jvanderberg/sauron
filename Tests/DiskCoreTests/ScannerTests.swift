@@ -107,6 +107,66 @@ final class ScannerTests: XCTestCase {
         XCTAssertNil(big.parent)
     }
 
+    func testLiveAggregationGrowsMonotonically() throws {
+        for i in 0..<20 {
+            try writeFile("nest/level\(i % 4)/file\(i).bin", bytes: 100_000)
+        }
+        var observedRoot: FileNode?
+        var observedSizes: [Int64] = []
+        let result = try Scanner.scan(
+            path: fixture.path,
+            progressEvery: 1,
+            onRootReady: { observedRoot = $0 },
+            progress: { _, _ in
+                // Called on the scanning thread mid-scan: the live tree must
+                // already aggregate everything seen so far at the root.
+                if let root = observedRoot { observedSizes.append(root.size) }
+                return true
+            }
+        )
+        XCTAssertTrue(observedRoot === result.root)
+        XCTAssertGreaterThan(observedSizes.count, 10)
+        XCTAssertEqual(observedSizes, observedSizes.sorted(),
+            "root size must grow monotonically during the scan")
+        XCTAssertGreaterThan(observedSizes[observedSizes.count / 2], 0,
+            "root size must be non-zero mid-scan, not only at the end")
+        XCTAssertEqual(observedSizes.last, result.root.size)
+    }
+
+    func testFindByPath() throws {
+        try writeFile("a/b/target.bin", bytes: 1000)
+        let root = try Scanner.scan(path: fixture.path).root
+        let found = root.find(path: root.name + "/a/b/target.bin")
+        XCTAssertEqual(found?.name, "target.bin")
+        XCTAssertTrue(root.find(path: root.name) === root)
+        XCTAssertNil(root.find(path: root.name + "/a/missing.bin"))
+        XCTAssertNil(root.find(path: "/somewhere/else"))
+    }
+
+    func testReplaceContentsAfterSubtreeRescan() throws {
+        try writeFile("sub/keep.bin", bytes: 1_000_000)
+        let doomed = try writeFile("sub/doomed.bin", bytes: 2_000_000)
+        try writeFile("other.bin", bytes: 500_000)
+
+        let root = try Scanner.scan(path: fixture.path).root
+        let sub = try XCTUnwrap(root.children.first { $0.name == "sub" })
+        let rootBefore = root.size
+        let subBefore = sub.size
+
+        // Simulate an external deletion, then a subtree rescan spliced in.
+        try FileManager.default.removeItem(at: doomed)
+        let fresh = try Scanner.scan(path: sub.path).root
+        sub.replaceContents(with: fresh)
+
+        XCTAssertLessThan(sub.size, subBefore)
+        XCTAssertEqual(root.size, rootBefore - (subBefore - sub.size))
+        XCTAssertNil(sub.children.first { $0.name == "doomed.bin" })
+        XCTAssertEqual(sub.children.first { $0.name == "keep.bin" }?.parent === sub, true)
+        // The rescanned node keeps its identity and place in the tree.
+        XCTAssertTrue(root.children.contains { $0 === sub })
+        XCTAssertTrue(sub.children.allSatisfy { $0.path.hasPrefix(sub.path) })
+    }
+
     func testPathReconstruction() throws {
         try writeFile("a/b/deep.bin", bytes: 1000)
         let result = try Scanner.scan(path: fixture.path)

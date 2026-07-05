@@ -31,9 +31,22 @@ public enum Scanner {
     /// Return false to cancel the scan; the partial tree is still returned.
     public typealias Progress = (Int, String) -> Bool
 
-    private static let progressInterval = 4096
-
-    public static func scan(path rawPath: String, progress: Progress? = nil) throws -> ScanResult {
+    /// Scan a directory tree.
+    ///
+    /// Sizes propagate to every ancestor as each entry is visited, so the
+    /// tree is *live*: readers see totals grow monotonically during the scan.
+    /// - lock: taken around every tree mutation. Pass one (and take it when
+    ///   reading) to render the tree while the scan is still running.
+    /// - progressEvery: how many entries between progress callbacks.
+    /// - onRootReady: called (on the scanning thread) as soon as the root
+    ///   node exists, so callers can start displaying it.
+    public static func scan(
+        path rawPath: String,
+        lock: NSLock? = nil,
+        progressEvery: Int = 4096,
+        onRootReady: ((FileNode) -> Void)? = nil,
+        progress: Progress? = nil
+    ) throws -> ScanResult {
         let path = (rawPath as NSString).expandingTildeInPath
         var pathArgs: [UnsafeMutablePointer<CChar>?] = [strdup(path), nil]
         defer { free(pathArgs[0]) }
@@ -52,7 +65,7 @@ public enum Scanner {
         while let ent = fts_read(stream) {
             let info = Int32(ent.pointee.fts_info)
             entryCount += 1
-            if entryCount % progressInterval == 0, let progress {
+            if progressEvery > 0, entryCount % progressEvery == 0, let progress {
                 let current = String(cString: ent.pointee.fts_path)
                 if !progress(entryCount, current) {
                     cancelled = true
@@ -62,19 +75,25 @@ public enum Scanner {
 
             switch info {
             case FTS_D:
+                let own = physicalSize(ent)
+                lock?.lock()
                 let node = FileNode(
                     name: stack.isEmpty ? path : entName(ent),
                     isDirectory: true,
-                    size: physicalSize(ent),
+                    size: own,
                     parent: stack.last
                 )
                 stack.last?.addChild(node)
-                if root == nil { root = node }
+                for ancestor in stack { ancestor.size += own }
+                lock?.unlock()
+                if root == nil {
+                    root = node
+                    onRootReady?(node)
+                }
                 stack.append(node)
 
             case FTS_DP:
-                let node = stack.removeLast()
-                if let parent = stack.last { parent.size += node.size }
+                _ = stack.popLast()
 
             case FTS_F, FTS_SL, FTS_SLNONE, FTS_DEFAULT:
                 guard let parent = stack.last else { continue }
@@ -84,9 +103,11 @@ public enum Scanner {
                     let key = HardLinkKey(dev: st.pointee.st_dev, ino: st.pointee.st_ino)
                     if !seenHardLinks.insert(key).inserted { size = 0 }
                 }
+                lock?.lock()
                 let node = FileNode(name: entName(ent), isDirectory: false, size: size, parent: parent)
                 parent.addChild(node)
-                parent.size += size
+                for ancestor in stack { ancestor.size += size }
+                lock?.unlock()
 
             case FTS_DNR, FTS_ERR, FTS_NS:
                 errorCount += 1
@@ -96,17 +117,12 @@ public enum Scanner {
             }
         }
 
-        // On cancellation the directory stack may be partially unwound; the
-        // aggregated sizes of still-open directories are propagated here.
-        while stack.count > 1 {
-            let node = stack.removeLast()
-            stack.last?.size += node.size
-        }
-
         guard let rootNode = root ?? scanSingleFile(path: path) else {
             throw ScanError.cannotOpen(path)
         }
+        lock?.lock()
         rootNode.sortBySize()
+        lock?.unlock()
         return ScanResult(root: rootNode, entryCount: entryCount, errorCount: errorCount, cancelled: cancelled)
     }
 
