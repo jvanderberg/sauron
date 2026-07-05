@@ -2,13 +2,20 @@ import XCTest
 @testable import DiskCore
 
 final class CacheTests: XCTestCase {
-    func testNormalize() {
-        XCTAssertEqual(Paths.normalize("/System/Volumes/Data"), "/")
-        XCTAssertEqual(Paths.normalize("/System/Volumes/Data/Users/x"), "/Users/x")
-        XCTAssertEqual(Paths.normalize("/Users/x/"), "/Users/x")
-        XCTAssertEqual(Paths.normalize("/Users/x"), "/Users/x")
-        XCTAssertEqual(Paths.normalize("/"), "/")
-        XCTAssertEqual(Paths.normalize("/System/Volumes/DataStore"), "/System/Volumes/DataStore")
+    func testCanonicalAndVariants() {
+        XCTAssertEqual(Paths.canonical("/Users/x/"), "/Users/x")
+        XCTAssertEqual(Paths.canonical("/"), "/")
+
+        // Deep paths alias across the firmlink graft, in both directions.
+        XCTAssertEqual(Paths.variants("/System/Volumes/Data/Users/x"),
+                       ["/System/Volumes/Data/Users/x", "/Users/x"])
+        XCTAssertEqual(Paths.variants("/Users/x"),
+                       ["/Users/x", "/System/Volumes/Data/Users/x"])
+        // The two volume roots are distinct directories — no aliasing.
+        XCTAssertEqual(Paths.variants("/"), ["/"])
+        XCTAssertEqual(Paths.variants("/System/Volumes/Data"), ["/System/Volumes/Data"])
+        XCTAssertEqual(Paths.variants("/System/Volumes/DataStore"),
+                       ["/System/Volumes/DataStore", "/System/Volumes/Data/System/Volumes/DataStore"])
     }
 
     private func makeTree(rootName: String) -> FileNode {
@@ -27,8 +34,48 @@ final class CacheTests: XCTestCase {
         let root = makeTree(rootName: "/System/Volumes/Data")
         XCTAssertEqual(Paths.find("/Users/josh", in: root)?.name, "josh")
         XCTAssertEqual(Paths.find("/System/Volumes/Data/Users/josh", in: root)?.name, "josh")
-        XCTAssertTrue(Paths.find("/", in: root) === root)
         XCTAssertNil(Paths.find("/Users/other", in: root))
+        // A Data tree must never impersonate the "/" root (different dir).
+        XCTAssertNil(Paths.find("/", in: root))
+    }
+
+    /// Regression: a "/" scan records the Data volume nested under
+    /// /System/Volumes/Data (and may have recorded /Users only under that
+    /// spelling thanks to alias dedup). Lookups must resolve to the nested
+    /// nodes — never hand back the "/" root as if it were the Data volume.
+    func testRootScanTreeServesDataAndHomeLookups() {
+        let root = FileNode(name: "/", isDirectory: true, size: 500)
+        let system = FileNode(name: "System", isDirectory: true, size: 480, parent: root)
+        root.addChild(system)
+        let volumes = FileNode(name: "Volumes", isDirectory: true, size: 470, parent: system)
+        system.addChild(volumes)
+        let data = FileNode(name: "Data", isDirectory: true, size: 460, parent: volumes)
+        volumes.addChild(data)
+        let users = FileNode(name: "Users", isDirectory: true, size: 400, parent: data)
+        data.addChild(users)
+        let josh = FileNode(name: "josh", isDirectory: true, size: 400, parent: users)
+        users.addChild(josh)
+
+        XCTAssertTrue(Paths.find("/System/Volumes/Data", in: root) === data)
+        XCTAssertTrue(Paths.find("/Users/josh", in: root) === josh)
+
+        let cache = ScanCache()
+        cache.store(root: root, path: "/", complete: true)
+        // Scan Disk after a "/" scan: served by the nested Data node.
+        XCTAssertTrue(cache.lookup(path: "/System/Volumes/Data")?.node === data)
+        // Scan Home: served through the Data spelling.
+        XCTAssertTrue(cache.lookup(path: "/Users/josh")?.node === josh)
+        // And "/" itself still gets the whole tree.
+        XCTAssertTrue(cache.lookup(path: "/")?.node === root)
+    }
+
+    /// The inverse must NOT hold at the root level: a cached Data-volume
+    /// tree cannot satisfy a request to scan "/".
+    func testDataTreeDoesNotServeRootScan() {
+        let cache = ScanCache()
+        cache.store(root: makeTree(rootName: "/System/Volumes/Data"),
+                    path: "/System/Volumes/Data", complete: true)
+        XCTAssertNil(cache.lookup(path: "/"))
     }
 
     func testCacheExactAndSubtreeLookup() {

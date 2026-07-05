@@ -6,8 +6,10 @@ struct ContentView: View {
 
     /// "/System/Volumes/Data" is where all user-writable data on the startup
     /// disk actually lives; show a human name instead of the firmlink path.
+    /// Only that literal path gets the label — a "/" scan is a different
+    /// tree (the sealed system volume) and must not be mislabeled.
     private func friendlyName(_ path: String) -> String {
-        Paths.normalize(path) == "/" ? "Startup Disk (Data volume)" : path
+        Paths.canonical(path) == "/System/Volumes/Data" ? "Startup Disk (Data volume)" : path
     }
 
     var body: some View {

@@ -1,34 +1,53 @@
 import Foundation
 
-/// Path normalization for cache lookups. On modern macOS the startup disk's
-/// user data lives on the Data volume, so "/System/Volumes/Data/Users/x" and
-/// "/Users/x" are the same directory through a firmlink. Normalizing both
-/// spellings lets a "Scan Disk" tree serve as cache for a "Scan Home".
+/// Path spelling helpers for cache lookups. On modern macOS the startup
+/// disk's user data lives on the Data volume, and firmlinks graft it into
+/// the / namespace: "/Users/x" and "/System/Volumes/Data/Users/x" are the
+/// same directory. Crucially the two volume ROOTS are NOT equivalent — "/"
+/// (the sealed system volume) and "/System/Volumes/Data" are different
+/// directories with different direct contents — so deep paths get alias
+/// spellings but the roots never alias each other.
 public enum Paths {
-    private static let dataVolume = "/System/Volumes/Data"
+    static let dataVolume = "/System/Volumes/Data"
 
-    public static func normalize(_ path: String) -> String {
+    /// Trim trailing slashes; the canonical cache-key form.
+    public static func canonical(_ path: String) -> String {
         var p = path
-        if p.count > 1 && p.hasSuffix("/") { p = String(p.dropLast()) }
-        if p == dataVolume { return "/" }
-        if p.hasPrefix(dataVolume + "/") { return String(p.dropFirst(dataVolume.count)) }
+        while p.count > 1 && p.hasSuffix("/") { p = String(p.dropLast()) }
         return p
     }
 
-    /// Find the node for an absolute path inside a tree, tolerating
-    /// firmlink-alias differences between the path and the tree's root.
+    /// All spellings of the same location through the Data-volume firmlink
+    /// graft. The volume roots return only themselves.
+    public static func variants(_ path: String) -> [String] {
+        let p = canonical(path)
+        if p.hasPrefix(dataVolume + "/") { return [p, String(p.dropFirst(dataVolume.count))] }
+        if p != "/" && p != dataVolume && p.hasPrefix("/") { return [p, dataVolume + p] }
+        return [p]
+    }
+
+    /// Find the node for an absolute path inside a tree, trying every alias
+    /// spelling of the target. Asking a "/"-rooted tree for
+    /// "/System/Volumes/Data" (or for "/Users/x" when the scan happened to
+    /// record it under the Data spelling) resolves to the nested node.
     public static func find(_ target: String, in root: FileNode) -> FileNode? {
-        let nt = normalize(target)
-        let nr = normalize(root.path)
-        if nt == nr { return root }
-        let prefix = nr.hasSuffix("/") ? nr : nr + "/"
-        guard nt.hasPrefix(prefix) else { return nil }
-        var node = root
-        for component in nt.dropFirst(prefix.count).split(separator: "/") {
-            guard let next = node.children.first(where: { $0.name == component }) else { return nil }
-            node = next
+        let rootPath = canonical(root.path)
+        let prefix = rootPath == "/" ? "/" : rootPath + "/"
+        for spelling in variants(target) {
+            if spelling == rootPath { return root }
+            guard spelling.hasPrefix(prefix) else { continue }
+            var node = root
+            var found = true
+            for component in spelling.dropFirst(prefix.count).split(separator: "/") {
+                guard let next = node.children.first(where: { $0.name == component }) else {
+                    found = false
+                    break
+                }
+                node = next
+            }
+            if found { return node }
         }
-        return node
+        return nil
     }
 }
 
@@ -55,35 +74,35 @@ public final class ScanCache {
     /// but a fresh *complete* scan always wins, even if smaller (files may
     /// genuinely have been deleted).
     public func store(root: FileNode, path: String, complete: Bool, date: Date = Date()) {
-        let key = Paths.normalize(path)
+        let key = Paths.canonical(path)
         if let existing = entries[key], !complete {
             if existing.complete { return }
             if existing.root.size > root.size { return }
         }
-        if entries[key] == nil {
-            insertionOrder.append(key)
-            if insertionOrder.count > capacity {
-                entries.removeValue(forKey: insertionOrder.removeFirst())
-            }
+        insertionOrder.removeAll { $0 == key }
+        insertionOrder.append(key)
+        if insertionOrder.count > capacity {
+            entries.removeValue(forKey: insertionOrder.removeFirst())
         }
         entries[key] = Entry(root: root, complete: complete, date: date)
     }
 
-    /// Best cached data covering `path`: an exact entry, or the node found
-    /// inside the most specific entry whose root is an ancestor of `path`.
+    /// Best cached data covering `path`: an exact entry, or the node for
+    /// `path` found inside another entry's tree (most recent first). A "/"
+    /// scan serves a Data-volume request via its nested
+    /// /System/Volumes/Data node — never by impersonating it with its root.
     public func lookup(path: String) -> (node: FileNode, complete: Bool, date: Date)? {
-        let target = Paths.normalize(path)
+        let target = Paths.canonical(path)
         if let entry = entries[target] {
             return (entry.root, entry.complete, entry.date)
         }
-        var best: (key: String, entry: Entry)?
-        for (key, entry) in entries {
-            let prefix = key.hasSuffix("/") ? key : key + "/"
-            guard target.hasPrefix(prefix) else { continue }
-            if best == nil || key.count > best!.key.count { best = (key, entry) }
+        for key in insertionOrder.reversed() {
+            guard let entry = entries[key] else { continue }
+            if let node = Paths.find(target, in: entry.root) {
+                return (node, entry.complete, entry.date)
+            }
         }
-        guard let best, let node = Paths.find(path, in: best.entry.root) else { return nil }
-        return (node, best.entry.complete, best.entry.date)
+        return nil
     }
 
     public func removeAll() {
