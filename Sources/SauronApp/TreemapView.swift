@@ -49,16 +49,24 @@ struct TreemapView: View {
                     canvas(frames: displayedFrames(at: timeline.date, size: geo.size))
                 }
                 .gesture(
-                    ExclusiveGesture(
-                        SpatialTapGesture(count: 2).onEnded { value in
-                            if let frame = hitTest(at: value.location, size: geo.size) {
-                                model.drillDown(into: frame.tile.node)
-                            }
-                        },
-                        SpatialTapGesture(count: 1).onEnded { value in
-                            model.select(hitTest(at: value.location, size: geo.size)?.tile.node)
+                    // One handler for every click, disambiguated by AppKit's
+                    // click count. An ExclusiveGesture(double, single) would
+                    // delay the single tap ~300ms to rule out a double-click,
+                    // during which ⌫ acts on the PREVIOUS selection. Here the
+                    // first click selects instantly (Finder-style) and the
+                    // second click of a double-click drills.
+                    SpatialTapGesture(count: 1).onEnded { value in
+                        let clicks = NSApp.currentEvent?.clickCount ?? 1
+                        guard let frame = hitTest(at: value.location, size: geo.size) else {
+                            if clicks == 1 { model.select(nil) }
+                            return
                         }
-                    )
+                        if clicks >= 2 {
+                            model.drillDown(into: frame.tile.node)
+                        } else {
+                            model.select(frame.tile.node)
+                        }
+                    }
                 )
                 .onContinuousHover { phase in
                     switch phase {
