@@ -38,6 +38,11 @@ final class AppModel: ObservableObject {
     // take a while to report reclaimed space).
     @Published var actualFreeSpace: Int64 = 0
     @Published var optimisticFreeSpace: Int64?
+    // The optimistic figure only bridges the OS's reporting lag. It can
+    // legitimately overshoot reality (APFS snapshots keep referencing
+    // deleted blocks), so it expires instead of waiting forever for the
+    // real number to catch up.
+    private var optimisticExpiry: Date?
 
     // True while the map shows earlier (cached/partial) results and a fresh
     // scan is refreshing them in the background.
@@ -416,8 +421,12 @@ final class AppModel: ObservableObject {
         // Assign only on change: every @Published write re-renders all
         // observers, and this runs on a 5s timer.
         if actualFreeSpace != free { actualFreeSpace = free }
-        if let optimistic = optimisticFreeSpace, free >= optimistic {
-            optimisticFreeSpace = nil
+        if let optimistic = optimisticFreeSpace {
+            let expired = optimisticExpiry.map { Date() > $0 } ?? true
+            if free >= optimistic || expired {
+                optimisticFreeSpace = nil
+                optimisticExpiry = nil
+            }
         }
     }
 
@@ -431,6 +440,7 @@ final class AppModel: ObservableObject {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.optimisticFreeSpace = baseline + trashSize
+                    self.optimisticExpiry = Date().addingTimeInterval(30)
                     self.refreshFreeSpace()
                 }
             } catch {

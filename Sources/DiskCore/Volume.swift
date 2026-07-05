@@ -2,8 +2,15 @@ import Foundation
 
 public enum Volume {
     /// Available capacity (bytes) of the volume containing `path`.
+    /// Prefers the "important usage" figure — the one Finder shows — which
+    /// includes purgeable space and responds promptly to emptying the trash;
+    /// falls back to the plain figure if it's unavailable.
     public static func freeSpace(at path: String = NSHomeDirectory()) -> Int64? {
         let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+           let capacity = values.volumeAvailableCapacityForImportantUsage, capacity > 0 {
+            return capacity
+        }
         guard let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
               let capacity = values.volumeAvailableCapacity
         else { return nil }
