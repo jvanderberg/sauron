@@ -40,27 +40,6 @@ struct ContentView: View {
                 }
             }
             .frame(minWidth: 600, minHeight: 400)
-            // Drop a folder anywhere in the window to scan it.
-            .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted) { providers in
-                // The scan started by the drop rebuilds the view under the
-                // drag, so the system never delivers the "exited" that would
-                // clear isTargeted — clear it ourselves.
-                DispatchQueue.main.async { isDropTargeted = false }
-                guard let provider = providers.first else { return false }
-                _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    guard let url else { return }
-                    Task { @MainActor in
-                        isDropTargeted = false
-                        var isDirectory: ObjCBool = false
-                        guard FileManager.default.fileExists(atPath: url.path,
-                                                             isDirectory: &isDirectory) else { return }
-                        model.scan(path: isDirectory.boolValue
-                                   ? url.path
-                                   : url.deletingLastPathComponent().path)
-                    }
-                }
-                return true
-            }
             .overlay {
                 if isDropTargeted {
                     ZStack {
@@ -76,6 +55,12 @@ struct ContentView: View {
                     .allowsHitTesting(false)
                 }
             }
+            // Drop a folder anywhere in the pane to scan it. The drop
+            // modifier must be OUTSIDE the overlay: otherwise the highlight
+            // that appears on dragEntered sits above the drop target and
+            // swallows the drop itself.
+            .onDrop(of: [UTType.fileURL],
+                    delegate: ScanDropDelegate(model: model, isTargeted: $isDropTargeted))
 
             TrashPanel()
         }
@@ -278,6 +263,43 @@ struct ContentView: View {
         if panel.runModal() == .OK, let url = panel.url {
             model.scan(path: url.path)
         }
+    }
+}
+
+/// Drop a folder (or file — its parent is used) to start scanning it.
+/// A DropDelegate rather than the closure form so entered/exited/perform
+/// all manage the highlight state explicitly — no stuck overlays.
+struct ScanDropDelegate: DropDelegate {
+    let model: AppModel
+    @Binding var isTargeted: Bool
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [UTType.fileURL])
+    }
+
+    func dropEntered(info: DropInfo) {
+        isTargeted = true
+    }
+
+    func dropExited(info: DropInfo) {
+        isTargeted = false
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        isTargeted = false
+        guard let provider = info.itemProviders(for: [UTType.fileURL]).first else { return false }
+        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+            guard let url else { return }
+            Task { @MainActor in
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: url.path,
+                                                     isDirectory: &isDirectory) else { return }
+                model.scan(path: isDirectory.boolValue
+                           ? url.path
+                           : url.deletingLastPathComponent().path)
+            }
+        }
+        return true
     }
 }
 
