@@ -12,7 +12,10 @@ struct HelpView: View {
                 section("Scanning", """
                 • House scans your home folder; the internal-drive button scans the \
                 startup disk (the APFS Data volume — everything user-writable); the \
-                folder button scans any folder you choose.
+                folder button scans any folder you choose. You can also drop a \
+                folder anywhere in the window. (Drag from a Finder window's main \
+                pane — dragging items out of the sidebar's Favorites removes them \
+                from Favorites; that's Finder behavior, not Sauron.)
                 • The map appears immediately and updates live every 2 seconds while \
                 the scan runs — big offenders dominate within seconds.
                 • Starting a new scan cancels the current one and keeps its partial \
