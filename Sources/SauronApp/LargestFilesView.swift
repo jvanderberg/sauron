@@ -7,10 +7,22 @@ import DiskCore
 struct LargestFilesView: View {
     @EnvironmentObject var model: AppModel
 
-    /// log10(bytes): 6 = 1 MB … 10.3 ≈ 20 GB.
-    @State private var sliderLog: Double = 8
+    /// Snap points for the cutoff slider.
+    private static let detents: [Int64] = [
+        10_000_000,          // 10 MB
+        100_000_000,         // 100 MB
+        1_000_000_000,       // 1 GB
+        5_000_000_000,       // 5 GB
+        20_000_000_000,      // 20 GB
+        100_000_000_000,     // 100 GB
+        500_000_000_000,     // 500 GB
+    ]
 
-    private var cutoff: Int64 { Int64(pow(10, sliderLog)) }
+    @State private var detentIndex: Double = 1
+
+    private var cutoff: Int64 {
+        Self.detents[max(0, min(Self.detents.count - 1, Int(detentIndex.rounded())))]
+    }
 
     var body: some View {
         let rows = model.largestFiles(minSize: cutoff)
@@ -35,9 +47,13 @@ struct LargestFilesView: View {
             }
         }
         .onAppear {
-            sliderLog = log10(Double(max(model.fileCutoff, 1_000_000)))
+            // Nearest detent to the persisted cutoff.
+            let nearest = Self.detents.enumerated().min {
+                abs($0.element - model.fileCutoff) < abs($1.element - model.fileCutoff)
+            }
+            detentIndex = Double(nearest?.offset ?? 1)
         }
-        .onChange(of: sliderLog) { _ in
+        .onChange(of: detentIndex) { _ in
             model.fileCutoff = cutoff
         }
     }
@@ -47,8 +63,14 @@ struct LargestFilesView: View {
             Text("Files ≥ \(Format.bytes(cutoff))")
                 .font(.system(size: 12, weight: .semibold).monospacedDigit())
                 .frame(width: 130, alignment: .leading)
-            Slider(value: $sliderLog, in: 6...10.3)
-                .frame(maxWidth: 320)
+            Slider(value: $detentIndex, in: 0...Double(Self.detents.count - 1), step: 1) {
+                EmptyView()
+            } minimumValueLabel: {
+                Text("10 MB").font(.system(size: 9)).foregroundStyle(.tertiary)
+            } maximumValueLabel: {
+                Text("500 GB").font(.system(size: 9)).foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: 340)
             Spacer()
             Text(count == 500 ? "500+ files" : "\(count) files")
                 .font(.system(size: 11).monospacedDigit())
