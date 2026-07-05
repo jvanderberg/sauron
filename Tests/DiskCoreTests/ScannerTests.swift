@@ -167,6 +167,30 @@ final class ScannerTests: XCTestCase {
         XCTAssertTrue(sub.children.allSatisfy { $0.path.hasPrefix(sub.path) })
     }
 
+    func testLargestFilesCutoffAndOrder() throws {
+        try writeFile("a/huge.bin", bytes: 5_000_000)
+        try writeFile("a/deep/big.bin", bytes: 3_000_000)
+        try writeFile("b/mid.bin", bytes: 1_000_000)
+        try writeFile("b/tiny.bin", bytes: 10_000)
+
+        let root = try Scanner.scan(path: fixture.path).root
+
+        let files = root.largestFiles(minSize: 900_000)
+        XCTAssertEqual(files.map(\.name), ["huge.bin", "big.bin", "mid.bin"],
+                       "sorted desc, tiny.bin excluded by cutoff")
+
+        // Limit caps the result after sorting.
+        XCTAssertEqual(root.largestFiles(minSize: 0, limit: 2).map(\.name),
+                       ["huge.bin", "big.bin"])
+
+        // A cutoff larger than everything yields nothing.
+        XCTAssertTrue(root.largestFiles(minSize: 100_000_000).isEmpty)
+
+        // Single-file "tree".
+        let solo = try XCTUnwrap(root.largestFiles(minSize: 0).first)
+        XCTAssertFalse(solo.isDirectory)
+    }
+
     func testPathReconstruction() throws {
         try writeFile("a/b/deep.bin", bytes: 1000)
         let result = try Scanner.scan(path: fixture.path)

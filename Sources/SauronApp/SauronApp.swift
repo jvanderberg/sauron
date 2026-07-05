@@ -16,6 +16,23 @@ struct SauronApp: App {
                 .environmentObject(model)
                 .frame(minWidth: 900, minHeight: 500)
         }
+        .commands { HelpCommands() }
+
+        Window("Sauron Help", id: "help") {
+            HelpView()
+        }
+        .defaultSize(width: 560, height: 640)
+    }
+}
+
+struct HelpCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .help) {
+            Button("Sauron Help") { openWindow(id: "help") }
+                .keyboardShortcut("?", modifiers: .command)
+        }
     }
 }
 

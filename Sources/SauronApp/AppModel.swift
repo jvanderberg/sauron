@@ -12,6 +12,10 @@ final class ScanProgress: ObservableObject {
 
 @MainActor
 final class AppModel: ObservableObject {
+    enum ViewMode: String, CaseIterable {
+        case map
+        case files
+    }
     // Scan state. The tree is rendered *while* the scan runs: the scanner
     // mutates it under `treeLock`, and all UI reads go through the
     // snapshot/size accessors below, which take the same lock.
@@ -25,6 +29,11 @@ final class AppModel: ObservableObject {
 
     // Navigation: breadcrumb stack, root first. Empty when nothing scanned.
     @Published var navigation: [FileNode] = []
+
+    // Map (treemap) vs Files (flat largest-files list) presentation.
+    @Published var viewMode: ViewMode = .map
+    // Minimum size for the largest-files list; persisted across switches.
+    @Published var fileCutoff: Int64 = 100_000_000
 
     // Selection (single click). Marking for trash is a separate, explicit act.
     @Published var selected: FileNode?
@@ -324,6 +333,24 @@ final class AppModel: ObservableObject {
             for node in resolved { trashQueue.add(node) }
         }
         markedItems = trashQueue.items
+    }
+
+    /// Largest files anywhere under the scan root, with paths captured
+    /// under the tree lock (safe during a live scan).
+    func largestFiles(minSize: Int64, limit: Int = 500) -> [(node: FileNode, size: Int64, path: String)] {
+        guard let root else { return [] }
+        treeLock.lock()
+        defer { treeLock.unlock() }
+        return root.largestFiles(minSize: minSize, limit: limit)
+            .map { (node: $0, size: $0.size, path: $0.path) }
+    }
+
+    /// Jump from the files list to a file's location in the map.
+    func showInMap(_ node: FileNode) {
+        guard let parent = node.parent else { return }
+        navigation = parent.ancestry
+        selected = node
+        viewMode = .map
     }
 
     // MARK: - Navigation

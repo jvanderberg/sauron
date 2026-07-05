@@ -3,6 +3,7 @@ import DiskCore
 
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     /// "/System/Volumes/Data" is where all user-writable data on the startup
     /// disk actually lives; show a human name instead of the firmlink path.
@@ -18,12 +19,18 @@ struct ContentView: View {
                 toolbar
                 Divider()
                 if let current = model.currentNode {
-                    breadcrumbs
-                    Divider()
+                    if model.viewMode == .map {
+                        breadcrumbs
+                        Divider()
+                    }
                     if model.isScanning || model.isRescanning {
                         ScanProgressStrip(progress: model.scanProgress, mode: stripMode)
                     }
-                    TreemapView(node: current)
+                    if model.viewMode == .map {
+                        TreemapView(node: current)
+                    } else {
+                        LargestFilesView()
+                    }
                 } else if model.isScanning {
                     ScanStartingView(progress: model.scanProgress)
                 } else {
@@ -72,6 +79,17 @@ struct ContentView: View {
                 }
                 .foregroundStyle(.secondary)
             }
+            Divider().frame(height: 16)
+            Picker("", selection: $model.viewMode) {
+                Image(systemName: "square.grid.2x2").tag(AppModel.ViewMode.map)
+                    .help("Treemap")
+                Image(systemName: "list.bullet").tag(AppModel.ViewMode.files)
+                    .help("Largest files")
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 88)
+            .disabled(model.currentNode == nil)
+            .help("Switch between the treemap and the largest-files list")
             Spacer()
             if let root = model.root, !model.isScanning {
                 Text("\(Format.bytes(model.size(of: root))) in \(friendlyName(model.scannedPath))")
@@ -85,6 +103,9 @@ struct ContentView: View {
                         .foregroundStyle(.orange)
                         .help("Some directories could not be read — grant Full Disk Access for complete results")
                 }
+            }
+            toolbarButton("questionmark.circle", help: "Sauron Help (⌘?)") {
+                openWindow(id: "help")
             }
         }
         .padding(.horizontal, 10)

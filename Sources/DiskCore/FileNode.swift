@@ -89,6 +89,31 @@ public final class FileNode {
         }
     }
 
+    /// Every file (not directory) in this subtree with size >= minSize,
+    /// sorted largest first, capped at `limit`. Prunes aggressively: a
+    /// directory smaller than minSize cannot contain a qualifying file, so
+    /// huge trees stay cheap to query.
+    public func largestFiles(minSize: Int64, limit: Int = 1000) -> [FileNode] {
+        var result: [FileNode] = []
+        if !isDirectory {
+            if size >= minSize { result.append(self) }
+            return result
+        }
+        var stack: [FileNode] = [self]
+        while let node = stack.popLast() {
+            for child in node.children {
+                if child.isDirectory {
+                    if child.size >= minSize { stack.append(child) }
+                } else if child.size >= minSize {
+                    result.append(child)
+                }
+            }
+        }
+        result.sort { $0.size > $1.size }
+        if result.count > limit { result.removeLast(result.count - limit) }
+        return result
+    }
+
     /// Detach this node from the tree, subtracting its size from every
     /// ancestor. Used after a successful move-to-trash.
     public func removeFromParent() {

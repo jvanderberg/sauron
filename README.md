@@ -1,9 +1,10 @@
 # Sauron
 
 One treemap to find them all. A macOS disk-usage explorer: scan a folder (or the
-whole Data volume), see where the space went as an explorable heat map, drill
-into any level, mark things for the trash, and free the space — all without
-Xcode. Pure SwiftPM.
+whole Data volume), see where the space went as an explorable, animated heat
+map, drill into any level, hunt the biggest files, mark things for the trash,
+and free the space — all without Xcode. Pure SwiftPM, zero dependencies, even
+the app icon is rendered in code.
 
 ![Treemap render](docs/screenshot.png)
 *(headless render of the treemap — the hatched red tile is marked for the trash)*
@@ -29,8 +30,12 @@ make app        # build Sauron.app, then: open Sauron.app
   big offenders dominate within seconds; explore without waiting.
 - **Click** selects a tile. **⌫** (or the status-bar button, or right-click)
   marks the selection for the trash — marking is always an explicit act, never
-  a stray click. **Double-click** a directory to drill in; breadcrumbs and the
-  ↑ button navigate back out.
+  a stray click. **Double-click** a directory to drill in (the map zooms);
+  breadcrumbs and the ↑ button navigate back out.
+- **Map ⇄ Largest Files switcher** — the list view shows every file at or
+  above a slider-set size cutoff, anywhere in the scan, sorted largest first.
+  Mark files for the trash straight from the list, or "Show in Map" to jump
+  to where one lives.
 - **⟳ Rescan** re-scans just the folder you're looking at and splices the
   fresh numbers into the tree — cheap truth-up after deletions, no full rescan.
 - **Switching scans never loses work.** Starting a new scan cancels the
@@ -49,14 +54,19 @@ make app        # build Sauron.app, then: open Sauron.app
 
 Granting your terminal (or Sauron.app) **Full Disk Access** avoids "unreadable"
 directories. The first Empty Trash triggers a one-time automation prompt to
-control Finder.
+control Finder. In-app help: **⌘?** or the Help menu.
 
 ## Architecture
 
 - `Sources/DiskCore` — all logic, zero UI: fts(3)-based scanner, squarified
-  treemap layout, trash queue/operations, volume free-space.
+  treemap layout, largest-files query, scan cache with firmlink path aliasing,
+  trash queue/operations, volume free-space.
 - `Sources/sauron-cli` — drives the core from the shell; used by the smoke tests.
-- `Sources/SauronApp` — SwiftUI shell over DiskCore.
+- `Sources/SauronApp` — SwiftUI shell over DiskCore. The treemap is a single
+  Canvas drawing manually interpolated frames; clicks hit-test the exact frames
+  drawn, so display and hit targets can't diverge.
+- `scripts/make_icon.swift` — the app icon, drawn with Core Graphics at build
+  time (`make app` bakes the .icns). No binary assets in the repo.
 
 ## Testing
 
