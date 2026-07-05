@@ -358,8 +358,11 @@ struct TreemapView: View {
             if target.isDirectory && model.hasChildren(target) {
                 Button("Open \"\(target.name)\"") { model.drillDown(into: target) }
             }
+            Divider()
+            Button("Copy") { model.copyToPasteboard(target, pathOnly: false) }
+            Button("Copy Full Path") { model.copyToPasteboard(target, pathOnly: true) }
             Button("Reveal in Finder") {
-                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: target.path)])
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: model.pathString(of: target))])
             }
         }
     }

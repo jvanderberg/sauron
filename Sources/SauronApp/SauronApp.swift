@@ -16,7 +16,7 @@ struct SauronApp: App {
                 .environmentObject(model)
                 .frame(minWidth: 900, minHeight: 500)
         }
-        .commands { HelpCommands() }
+        .commands { AppCommands(model: model) }
 
         Window("Sauron Help", id: "help") {
             HelpView()
@@ -25,10 +25,34 @@ struct SauronApp: App {
     }
 }
 
-struct HelpCommands: Commands {
+/// Menu bar, audited: drop New Window (a second window would mirror the same
+/// model), drop the inert Undo/Redo and text-editing pasteboard items, and
+/// make Copy real — ⌘C copies the selection as a file URL (pasteable in
+/// Finder), ⌥⌘C copies the full path as text (Finder's own convention).
+struct AppCommands: Commands {
+    @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        CommandGroup(replacing: .newItem) {}
+        CommandGroup(replacing: .undoRedo) {}
+        CommandGroup(replacing: .pasteboard) {
+            Button("Copy") {
+                if let selected = model.selected {
+                    model.copyToPasteboard(selected, pathOnly: false)
+                }
+            }
+            .keyboardShortcut("c")
+            .disabled(model.selected == nil)
+
+            Button("Copy Full Path") {
+                if let selected = model.selected {
+                    model.copyToPasteboard(selected, pathOnly: true)
+                }
+            }
+            .keyboardShortcut("c", modifiers: [.command, .option])
+            .disabled(model.selected == nil)
+        }
         CommandGroup(replacing: .help) {
             Button("Sauron Help") { openWindow(id: "help") }
                 .keyboardShortcut("?", modifiers: .command)
@@ -84,6 +108,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // No tabs: also removes the dead Show Tab Bar / Show All Tabs items
+        // from the View and Window menus.
+        NSWindow.allowsAutomaticWindowTabbing = false
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

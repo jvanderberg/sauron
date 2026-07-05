@@ -345,6 +345,25 @@ final class AppModel: ObservableObject {
             .map { (node: $0, size: $0.size, path: $0.path) }
     }
 
+    func pathString(of node: FileNode) -> String {
+        treeLock.lock()
+        defer { treeLock.unlock() }
+        return node.path
+    }
+
+    /// Copy a node to the general pasteboard: as a file URL (pasteable in
+    /// Finder) or as its full path string.
+    func copyToPasteboard(_ node: FileNode, pathOnly: Bool) {
+        let path = pathString(of: node)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        if pathOnly {
+            pasteboard.setString(path, forType: .string)
+        } else {
+            pasteboard.writeObjects([URL(fileURLWithPath: path) as NSURL])
+        }
+    }
+
     /// Jump from the files list to a file's location in the map.
     func showInMap(_ node: FileNode) {
         guard let parent = node.parent else { return }

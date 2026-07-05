@@ -123,6 +123,9 @@ struct LargestFilesView: View {
                 model.toggleMark(row.node)
             }
             Button("Show in Map") { model.showInMap(row.node) }
+            Divider()
+            Button("Copy") { model.copyToPasteboard(row.node, pathOnly: false) }
+            Button("Copy Full Path") { model.copyToPasteboard(row.node, pathOnly: true) }
             Button("Reveal in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.path)])
             }

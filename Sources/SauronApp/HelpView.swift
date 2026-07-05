@@ -36,7 +36,10 @@ struct HelpView: View {
                 section("Navigating", """
                 • Click selects. Double-click opens a folder (zooms in). \
                 Breadcrumbs and ↑ go back out.
-                • Right-click any tile for Mark/Unmark, Open, and Reveal in Finder.
+                • Right-click any tile for Mark/Unmark, Open, Copy, Copy Full \
+                Path, and Reveal in Finder.
+                • ⌘C copies the selected item (paste it in Finder); ⌥⌘C copies \
+                its full path as text.
                 """)
 
                 section("Largest Files view", """
