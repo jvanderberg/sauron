@@ -4,12 +4,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 swift build -c release --product SauronApp
+./scripts/make_icns.sh .build/Sauron.icns
 
 APP="Sauron.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp .build/release/SauronApp "$APP/Contents/MacOS/Sauron"
+cp .build/Sauron.icns "$APP/Contents/Resources/Sauron.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -26,6 +28,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <string>Sauron</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>Sauron</string>
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
     <key>CFBundleVersion</key>
