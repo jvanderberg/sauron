@@ -295,7 +295,9 @@ final class AppModel: ObservableObject {
     // MARK: - Navigation
 
     func drillDown(into node: FileNode) {
-        guard node.isDirectory, hasChildren(node) else { return }
+        // Only ever drill into a direct child of the current view — rejects
+        // any stale node a UI layer might hand us.
+        guard node.isDirectory, hasChildren(node), node.parent === navigation.last else { return }
         selected = nil
         navigation.append(node)
     }

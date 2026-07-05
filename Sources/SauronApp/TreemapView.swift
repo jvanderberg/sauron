@@ -1,51 +1,101 @@
 import SwiftUI
 import DiskCore
 
-struct TreemapTile: Identifiable {
+struct TreemapTile: Equatable {
     let id: ObjectIdentifier
     let node: FileNode
     let size: Int64
     let rect: CGRect
+
+    static func == (lhs: TreemapTile, rhs: TreemapTile) -> Bool {
+        lhs.id == rhs.id && lhs.size == rhs.size && lhs.rect == rhs.rect
+    }
 }
 
+/// A tile with its on-screen rect at one instant (possibly mid-animation).
+struct TileFrame {
+    let tile: TreemapTile
+    let rect: CGRect
+    let opacity: Double
+}
+
+/// Animated treemap drawn as a single Canvas.
+///
+/// The layout animation is interpolated manually (origins → targets with an
+/// eased ramp) and BOTH drawing and hit-testing read the same interpolated
+/// frames. This is deliberate: with per-tile SwiftUI views, gesture targets
+/// live in the view hierarchy where interrupted transitions can strand
+/// invisible-but-clickable ghosts, and hit-testing tracks model geometry
+/// while pixels lag behind — either way, what you click isn't what you see.
+/// Here a click resolves against the rects that were just drawn, always.
 struct TreemapView: View {
     @EnvironmentObject var model: AppModel
     let node: FileNode
 
     @State private var hovered: FileNode?
+    @State private var targets: [TreemapTile] = []
+    @State private var origins: [ObjectIdentifier: CGRect] = [:]
+    @State private var animStart = Date.distantPast
+    @State private var isAnimating = false
+    @State private var lastSize = CGSize.zero
 
-    /// More tiles than this are invisible slivers anyway; keeping the view
-    /// count bounded keeps animated updates cheap.
     private static let maxTiles = 600
-    private let tileAnimation = Animation.easeInOut(duration: 1.0)
+    private static let animDuration: TimeInterval = 1.0
 
     var body: some View {
         VStack(spacing: 0) {
             GeometryReader { geo in
-                let tiles = computeTiles(in: geo.size)
-                ZStack(alignment: .topLeading) {
-                    ForEach(tiles) { tile in
-                        tileView(tile, maxSize: tiles.first?.size ?? 1)
+                TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isAnimating)) { timeline in
+                    canvas(frames: displayedFrames(at: timeline.date, size: geo.size))
+                }
+                .gesture(
+                    ExclusiveGesture(
+                        SpatialTapGesture(count: 2).onEnded { value in
+                            if let frame = hitTest(at: value.location, size: geo.size) {
+                                model.drillDown(into: frame.tile.node)
+                            }
+                        },
+                        SpatialTapGesture(count: 1).onEnded { value in
+                            model.select(hitTest(at: value.location, size: geo.size)?.tile.node)
+                        }
+                    )
+                )
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let location):
+                        hovered = hitTest(at: location, size: geo.size)?.tile.node
+                    case .ended:
+                        hovered = nil
                     }
                 }
-                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-                .background(Color(nsColor: .underPageBackgroundColor))
-                // Drives insert/remove transitions when the set of tiles
-                // changes between scan refreshes.
-                .animation(tileAnimation, value: tiles.map(\.id))
+                .contextMenu { contextMenuItems() }
+                .onAppear {
+                    lastSize = geo.size
+                    relayout(size: geo.size, animated: false)
+                }
+                .onChange(of: geo.size) { newSize in
+                    lastSize = newSize
+                    relayout(size: newSize, animated: false)
+                }
+                .onReceive(model.objectWillChange) { _ in
+                    // objectWillChange fires before the mutation lands; read
+                    // the new tree state on the next runloop turn.
+                    DispatchQueue.main.async { relayout(size: lastSize, animated: true) }
+                }
             }
-            .clipped()
             statusBar
         }
     }
 
-    private func computeTiles(in size: CGSize) -> [TreemapTile] {
+    // MARK: - Layout & animation
+
+    private func computeTargets(in size: CGSize) -> [TreemapTile] {
+        guard size.width > 0, size.height > 0 else { return [] }
         let snapshot = model.childrenSnapshot(of: node)
         guard !snapshot.isEmpty else { return [] }
-        let bounds = CGRect(origin: .zero, size: size)
-        let rects = Treemap.layout(values: snapshot.map { Double($0.size) }, in: bounds)
+        let rects = Treemap.layout(values: snapshot.map { Double($0.size) },
+                                   in: CGRect(origin: .zero, size: size))
         var tiles: [TreemapTile] = []
-        tiles.reserveCapacity(min(snapshot.count, Self.maxTiles))
         for (entry, rect) in zip(snapshot, rects) {
             guard rect.width >= 1.5, rect.height >= 1.5 else { continue }
             tiles.append(TreemapTile(id: ObjectIdentifier(entry.node), node: entry.node,
@@ -55,47 +105,135 @@ struct TreemapView: View {
         return tiles
     }
 
-    @ViewBuilder
-    private func tileView(_ tile: TreemapTile, maxSize: Int64) -> some View {
-        let inset = tile.rect.insetBy(dx: 0.5, dy: 0.5)
-        let isMarked = model.isMarked(tile.node)
-        TileBody(
-            name: tile.node.isDirectory ? tile.node.name + "/" : tile.node.name,
-            sizeText: Format.bytes(tile.size),
-            color: isMarked
-                ? Color(hue: 0, saturation: 0.85, brightness: 0.75)
-                : heatColor(size: tile.size, maxSize: maxSize, isDirectory: tile.node.isDirectory),
-            isMarked: isMarked,
-            isSelected: model.selected === tile.node,
-            isHovered: hovered === tile.node,
-            showLabel: inset.width > 60 && inset.height > 24
-        )
-        .frame(width: max(inset.width, 1), height: max(inset.height, 1))
-        .position(x: inset.midX, y: inset.midY)
-        .animation(tileAnimation, value: tile.rect)
-        .transition(.opacity)
-        .onHover { inside in
-            if inside {
-                hovered = tile.node
-            } else if hovered === tile.node {
-                hovered = nil
+    private func relayout(size: CGSize, animated: Bool) {
+        let newTargets = computeTargets(in: size)
+        guard newTargets != targets else { return }
+        if animated, !targets.isEmpty {
+            let now = Date()
+            // Current interpolated positions become the starting points, so
+            // an update landing mid-animation continues smoothly.
+            var current: [ObjectIdentifier: CGRect] = [:]
+            for frame in interpolatedFrames(at: now) { current[frame.tile.id] = frame.rect }
+            origins = current
+            animStart = now
+            targets = newTargets
+            isAnimating = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.animDuration + 0.05) {
+                if Date().timeIntervalSince(animStart) >= Self.animDuration {
+                    isAnimating = false
+                }
+            }
+        } else {
+            origins = [:]
+            animStart = .distantPast
+            targets = newTargets
+            isAnimating = false
+        }
+    }
+
+    private func interpolatedFrames(at date: Date) -> [TileFrame] {
+        let raw = date.timeIntervalSince(animStart) / Self.animDuration
+        let t = max(0, min(1, raw))
+        let eased = t * t * (3 - 2 * t)
+        return targets.map { tile in
+            if let origin = origins[tile.id] {
+                return TileFrame(tile: tile, rect: lerp(origin, tile.rect, eased), opacity: 1)
+            }
+            // Tile newly crossed the visibility threshold: fade in, in place.
+            return TileFrame(tile: tile, rect: tile.rect, opacity: origins.isEmpty ? 1 : eased)
+        }
+    }
+
+    /// Frames to draw right now. Falls back to a direct layout when state is
+    /// empty (first frame, or offscreen rendering where onAppear never ran).
+    private func displayedFrames(at date: Date, size: CGSize) -> [TileFrame] {
+        if targets.isEmpty {
+            return computeTargets(in: size).map { TileFrame(tile: $0, rect: $0.rect, opacity: 1) }
+        }
+        return interpolatedFrames(at: date)
+    }
+
+    /// Resolve a point against the frames as displayed at this instant —
+    /// the same source the canvas draws from. Later frames draw on top,
+    /// so search from the end.
+    private func hitTest(at point: CGPoint, size: CGSize) -> TileFrame? {
+        displayedFrames(at: Date(), size: size).last { $0.rect.contains(point) }
+    }
+
+    private func lerp(_ a: CGRect, _ b: CGRect, _ t: Double) -> CGRect {
+        CGRect(x: a.minX + (b.minX - a.minX) * t,
+               y: a.minY + (b.minY - a.minY) * t,
+               width: a.width + (b.width - a.width) * t,
+               height: a.height + (b.height - a.height) * t)
+    }
+
+    // MARK: - Drawing
+
+    private func canvas(frames: [TileFrame]) -> some View {
+        let maxSize = frames.map(\.tile.size).max() ?? 1
+        return Canvas { context, _ in
+            for frame in frames {
+                let inset = frame.rect.insetBy(dx: 0.5, dy: 0.5)
+                guard inset.width > 0, inset.height > 0 else { continue }
+                let tile = frame.tile
+                let isMarked = model.isMarked(tile.node)
+                let isSelected = model.selected === tile.node
+                let isHovered = hovered === tile.node
+
+                var color = isMarked
+                    ? Color(hue: 0, saturation: 0.85, brightness: 0.75)
+                    : heatColor(size: tile.size, maxSize: maxSize, isDirectory: tile.node.isDirectory)
+                if frame.opacity < 1 { color = color.opacity(frame.opacity) }
+                let shape = Path(roundedRect: inset, cornerRadius: 2)
+                context.fill(shape, with: .color(color))
+
+                if isMarked {
+                    // Diagonal hatching so marked tiles read as "condemned"
+                    // even next to naturally hot (orange) tiles.
+                    context.drawLayer { layer in
+                        layer.clip(to: shape)
+                        var hatch = Path()
+                        var x = inset.minX - inset.height
+                        while x < inset.maxX {
+                            hatch.move(to: CGPoint(x: x, y: inset.maxY))
+                            hatch.addLine(to: CGPoint(x: x + inset.height, y: inset.minY))
+                            x += 10
+                        }
+                        layer.stroke(hatch, with: .color(.white.opacity(0.35)), lineWidth: 2)
+                    }
+                    context.stroke(shape, with: .color(.red), lineWidth: 2)
+                }
+                if isSelected {
+                    context.stroke(shape, with: .color(.white), lineWidth: 3)
+                } else if isHovered {
+                    context.stroke(shape, with: .color(.white.opacity(0.7)), lineWidth: 1.5)
+                }
+
+                if inset.width > 60, inset.height > 24, frame.opacity == 1 {
+                    let name = tile.node.isDirectory ? tile.node.name + "/" : tile.node.name
+                    let text = Text("\(name)\n\(Format.bytes(tile.size))")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white)
+                    context.draw(context.resolve(text), in: inset.insetBy(dx: 4, dy: 3))
+                }
             }
         }
-        .gesture(
-            ExclusiveGesture(
-                TapGesture(count: 2).onEnded { model.drillDown(into: tile.node) },
-                TapGesture(count: 1).onEnded { model.select(tile.node) }
-            )
-        )
-        .contextMenu {
-            Button(isMarked ? "Unmark \"\(tile.node.name)\"" : "Mark \"\(tile.node.name)\" for Trash") {
-                model.toggleMark(tile.node)
+        .background(Color(nsColor: .underPageBackgroundColor))
+    }
+
+    // MARK: - Menus & status
+
+    @ViewBuilder
+    private func contextMenuItems() -> some View {
+        if let target = hovered ?? model.selected {
+            Button(model.isMarked(target) ? "Unmark \"\(target.name)\"" : "Mark \"\(target.name)\" for Trash") {
+                model.toggleMark(target)
             }
-            if tile.node.isDirectory && model.hasChildren(tile.node) {
-                Button("Open \"\(tile.node.name)\"") { model.drillDown(into: tile.node) }
+            if target.isDirectory && model.hasChildren(target) {
+                Button("Open \"\(target.name)\"") { model.drillDown(into: target) }
             }
             Button("Reveal in Finder") {
-                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: tile.node.path)])
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: target.path)])
             }
         }
     }
@@ -144,62 +282,5 @@ struct TreemapView: View {
         let hue = 0.62 - 0.54 * t
         return Color(hue: hue, saturation: isDirectory ? 0.65 : 0.45,
                      brightness: isDirectory ? 0.80 : 0.70)
-    }
-}
-
-/// A single treemap tile. Kept dumb (all state passed in) so SwiftUI can
-/// animate frame/position/color changes cheaply.
-private struct TileBody: View {
-    let name: String
-    let sizeText: String
-    let color: Color
-    let isMarked: Bool
-    let isSelected: Bool
-    let isHovered: Bool
-    let showLabel: Bool
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 2).fill(color)
-
-            if isMarked {
-                // Diagonal hatching so marked tiles read as "condemned"
-                // even next to naturally hot (orange) tiles.
-                Canvas { context, size in
-                    var hatch = Path()
-                    var x = -size.height
-                    while x < size.width {
-                        hatch.move(to: CGPoint(x: x, y: size.height))
-                        hatch.addLine(to: CGPoint(x: x + size.height, y: 0))
-                        x += 10
-                    }
-                    context.stroke(hatch, with: .color(.white.opacity(0.35)), lineWidth: 2)
-                }
-                .allowsHitTesting(false)
-            }
-
-            if showLabel {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(name).lineLimit(1)
-                    Text(sizeText)
-                }
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.white)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 3)
-                .allowsHitTesting(false)
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 2))
-        .overlay {
-            if isMarked {
-                RoundedRectangle(cornerRadius: 2).stroke(Color.red, lineWidth: 2)
-            }
-            if isSelected {
-                RoundedRectangle(cornerRadius: 2).stroke(Color.white, lineWidth: 3)
-            } else if isHovered {
-                RoundedRectangle(cornerRadius: 2).stroke(Color.white.opacity(0.7), lineWidth: 1.5)
-            }
-        }
     }
 }
