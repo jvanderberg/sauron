@@ -374,9 +374,10 @@ struct ScanProgressStrip: View {
         }
     }
 
-    private var trailing: String {
+    // Only shown when it says something the map doesn't show by itself.
+    private var trailing: String? {
         switch mode {
-        case .scanning: return "map updates live"
+        case .scanning: return nil
         case .refreshing: return "showing earlier results"
         case .rescanning: return "updates when finished"
         }
@@ -397,10 +398,12 @@ struct ScanProgressStrip: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text(trailing)
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-                .fixedSize()
+            if let trailing {
+                Text(trailing)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize()
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
