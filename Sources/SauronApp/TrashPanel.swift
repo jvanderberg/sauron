@@ -47,6 +47,33 @@ struct TrashPanel: View {
                             }
                             .buttonStyle(.plain)
                             .foregroundStyle(.secondary)
+                            .help("Remove from this list (keeps the file)")
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
+                                model.showInMap(item)
+                            } else {
+                                model.select(item)
+                            }
+                        }
+                        .listRowBackground(
+                            model.selected === item
+                                ? Color.accentColor.opacity(0.18)
+                                : nil
+                        )
+                        .contextMenu {
+                            Button("Show in Map") { model.showInMap(item) }
+                            Button("Quick Look") { model.quickLook(item) }
+                            Divider()
+                            Button("Copy") { model.copyToPasteboard(item, pathOnly: false) }
+                            Button("Copy Full Path") { model.copyToPasteboard(item, pathOnly: true) }
+                            Button("Reveal in Finder") {
+                                NSWorkspace.shared.activateFileViewerSelecting(
+                                    [URL(fileURLWithPath: model.pathString(of: item))])
+                            }
+                            Divider()
+                            Button("Unmark") { model.unmark(item) }
                         }
                     }
                 }
