@@ -10,6 +10,7 @@ USAGE:
   sauron-cli layout <W> <H> <v1> [v2 ...]        Print squarified treemap rects for weights
   sauron-cli freespace [path]                    Print free space on the volume containing path
   sauron-cli trash <path> [path ...]             Move paths to the trash (prints trash locations)
+  sauron-cli archive <path> <out>                Scan and save a compact scan archive (prints size)
   sauron-cli empty-trash --yes                   Empty the trash via Finder (requires --yes)
 """
 
@@ -99,6 +100,19 @@ case "trash":
         }
     }
     exit(failed ? 1 : 0)
+
+case "archive":
+    guard args.count >= 2 else { fail("archive: need <path> <out>") }
+    do {
+        let result = try Scanner.scan(path: args[0])
+        try ScanArchive.save(root: result.root, scannedPath: args[0], date: Date(),
+                             to: URL(fileURLWithPath: args[1]))
+        let attrs = try FileManager.default.attributesOfItem(atPath: args[1])
+        let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        print("archived \(result.entryCount) entries -> \(Format.bytes(bytes)) (\(bytes) bytes)")
+    } catch {
+        fail("archive failed: \(error)")
+    }
 
 case "empty-trash":
     guard args.contains("--yes") else { fail("empty-trash: pass --yes to confirm") }

@@ -1,6 +1,27 @@
 import SwiftUI
 import DiskCore
 
+/// On-disk persistence of the last completed scan. Nonisolated on purpose:
+/// used from detached tasks; locking stays inside synchronous functions.
+private enum ScanStore {
+    static let url: URL = {
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("com.joshv.sauron", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("last-scan.sauronscan")
+    }()
+
+    static func load() -> (root: FileNode, scannedPath: String, date: Date)? {
+        try? ScanArchive.load(from: url)
+    }
+
+    static func save(root: FileNode, scannedPath: String, lock: NSLock) {
+        lock.lock()
+        defer { lock.unlock() }
+        try? ScanArchive.save(root: root, scannedPath: scannedPath, date: Date(), to: url)
+    }
+}
+
 /// High-frequency scan telemetry, deliberately separated from AppModel:
 /// only the progress strip observes it, so its ~10Hz updates don't force
 /// treemap re-renders. The map itself refreshes on AppModel's 0.5Hz tick.
@@ -60,6 +81,9 @@ final class AppModel: ObservableObject {
     // scan is refreshing them in the background.
     @Published var showingCached = false
 
+    // True while the displayed tree came from a previous session's archive.
+    @Published var showingPersisted = false
+
     let treeLock = NSLock()
     private let trashQueue = TrashQueue()
     private let scanCache = ScanCache()
@@ -85,6 +109,49 @@ final class AppModel: ObservableObject {
         }
         RunLoop.main.add(timer, forMode: .common)
         freeSpaceTimer = timer
+        loadPersistedScan()
+    }
+
+    // MARK: - Persisted last scan
+
+    private func loadPersistedScan() {
+        Task.detached(priority: .utility) { [weak self] in
+            guard let loaded = ScanStore.load() else { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.root == nil, !self.isScanning else { return }
+                self.root = loaded.root
+                self.navigation = [loaded.root]
+                self.scannedPath = loaded.scannedPath
+                self.showingPersisted = true
+                self.scanCache.store(root: loaded.root, path: loaded.scannedPath,
+                                     complete: true, date: loaded.date)
+                self.objectWillChange.send()
+            }
+        }
+    }
+
+    /// Snapshot the current tree to disk (serialized under the tree lock).
+    /// Called after completed scans and after any operation that changes it.
+    private func persistScan() {
+        guard let root, !isScanning, !isRescanning else { return }
+        let path = scannedPath
+        let lock = treeLock
+        Task.detached(priority: .utility) {
+            ScanStore.save(root: root, scannedPath: path, lock: lock)
+        }
+    }
+
+    /// After the trash is emptied, the scanned ~/.Trash contents are gone:
+    /// zero that node so the map (and the persisted archive) reflect it.
+    private func zeroTrashInTree() {
+        guard let root else { return }
+        treeLock.lock()
+        let trashPath = NSHomeDirectory() + "/.Trash"
+        if let node = Paths.find(trashPath, in: root), node.isDirectory {
+            node.replaceContents(with: FileNode(name: node.name, isDirectory: true, size: 0))
+        }
+        treeLock.unlock()
+        objectWillChange.send()
     }
 
     // MARK: - Locked tree accessors (safe during a live scan)
@@ -132,6 +199,7 @@ final class AppModel: ObservableObject {
 
     private func startScan(path: String) {
         isScanning = true
+        showingPersisted = false
         cancelRequested = false
         scanProgress.count = 0
         scanProgress.currentPath = ""
@@ -224,6 +292,7 @@ final class AppModel: ObservableObject {
         rebuildQueue(fromPaths: stashedMarkedPaths)
         stashedMarkedPaths = []
         finishScan()
+        if !result.cancelled { persistScan() }
     }
 
     /// Replace the displayed (cached) tree with the freshly scanned one,
@@ -316,6 +385,7 @@ final class AppModel: ObservableObject {
                     self.rebuildQueue(fromPaths: markedPaths)
                     self.selected = nil
                     self.objectWillChange.send()
+                    self.persistScan()
                 }
             } catch {
                 await MainActor.run { [weak self] in
@@ -478,6 +548,7 @@ final class AppModel: ObservableObject {
                 if !finalErrors.isEmpty {
                     self.lastError = finalErrors.joined(separator: "\n")
                 }
+                if !finalSucceeded.isEmpty { self.persistScan() }
             }
         }
     }
@@ -523,6 +594,7 @@ final class AppModel: ObservableObject {
                 if !finalErrors.isEmpty {
                     self.lastError = finalErrors.joined(separator: "\n")
                 }
+                if !finalSucceeded.isEmpty { self.persistScan() }
             }
         }
     }
@@ -555,6 +627,10 @@ final class AppModel: ObservableObject {
                     self.optimisticFreeSpace = baseline + trashSize
                     self.optimisticExpiry = Date().addingTimeInterval(30)
                     self.refreshFreeSpace()
+                    // The scanned trash contents no longer exist; reflect
+                    // that in the map and the persisted archive.
+                    self.zeroTrashInTree()
+                    self.persistScan()
                 }
             } catch {
                 await MainActor.run { [weak self] in

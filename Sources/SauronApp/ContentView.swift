@@ -124,7 +124,7 @@ struct ContentView: View {
             .help("Switch between the treemap and the largest-files list")
             Spacer()
             if let root = model.root, !model.isScanning {
-                Text("\(Format.bytes(model.size(of: root))) in \(friendlyName(model.scannedPath))")
+                Text("\(Format.bytes(model.size(of: root))) in \(friendlyName(model.scannedPath))\(model.showingPersisted ? " · from last scan" : "")")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
