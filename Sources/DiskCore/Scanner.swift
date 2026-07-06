@@ -102,6 +102,22 @@ public enum Scanner {
                         continue
                     }
                 }
+                // Hazard directories whose enumeration can block forever:
+                // cloud-provider roots (~/Library/CloudStorage — the
+                // provider daemon must answer, and hung providers wedge
+                // readdir) and the /Volumes mount stubs (a dead network
+                // mount hangs lstat). Their contents are mostly not on
+                // disk, so record the directory as an empty leaf and move on.
+                if !stack.isEmpty, shouldSkipDescent(ent) {
+                    lock?.lock()
+                    let node = FileNode(name: entName(ent), isDirectory: true,
+                                        size: physicalSize(ent), parent: stack.last)
+                    stack.last?.addChild(node)
+                    for ancestor in stack { ancestor.size += node.size }
+                    lock?.unlock()
+                    _ = fts_set(stream, ent, FTS_SKIP)
+                    continue
+                }
                 let own = physicalSize(ent)
                 lock?.lock()
                 let node = FileNode(
@@ -163,6 +179,24 @@ public enum Scanner {
         var st = stat()
         guard lstat(path, &st) == 0 else { return nil }
         return FileNode(name: path, isDirectory: false, size: Int64(st.st_blocks) * 512)
+    }
+
+    /// Directories we refuse to descend into because their enumeration can
+    /// hang indefinitely (see call site). Matching is deliberately narrow.
+    private static func shouldSkipDescent(_ ent: UnsafeMutablePointer<FTSENT>) -> Bool {
+        let nameLen = Int(ent.pointee.fts_namelen)
+        // Fast reject on name length before building any strings.
+        guard nameLen == 12 /* CloudStorage */ || nameLen == 7 /* Volumes */ else { return false }
+        let name = entName(ent)
+        if name == "CloudStorage" {
+            let path = String(cString: ent.pointee.fts_path)
+            return path.hasSuffix("/Library/CloudStorage")
+        }
+        if name == "Volumes" {
+            let path = String(cString: ent.pointee.fts_path)
+            return path == "/Volumes" || path == "/System/Volumes/Data/Volumes"
+        }
+        return false
     }
 
     private static func physicalSize(_ ent: UnsafeMutablePointer<FTSENT>) -> Int64 {

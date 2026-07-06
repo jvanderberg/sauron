@@ -191,6 +191,21 @@ final class ScannerTests: XCTestCase {
         XCTAssertFalse(solo.isDirectory)
     }
 
+    func testCloudStorageDescentIsSkipped() throws {
+        try writeFile("Library/CloudStorage/FakeProvider/huge-placeholder.bin", bytes: 3_000_000)
+        try writeFile("regular/normal.bin", bytes: 1_000_000)
+
+        let root = try Scanner.scan(path: fixture.path).root
+        let library = try XCTUnwrap(root.children.first { $0.name == "Library" })
+        let cloud = try XCTUnwrap(library.children.first { $0.name == "CloudStorage" })
+        XCTAssertTrue(cloud.isDirectory)
+        XCTAssertTrue(cloud.children.isEmpty, "must not descend into CloudStorage")
+        XCTAssertLessThan(cloud.size, 100_000, "placeholder contents must not be counted")
+        // Regular content is unaffected.
+        let regular = try XCTUnwrap(root.children.first { $0.name == "regular" })
+        XCTAssertGreaterThanOrEqual(regular.size, 1_000_000)
+    }
+
     func testPathReconstruction() throws {
         try writeFile("a/b/deep.bin", bytes: 1000)
         let result = try Scanner.scan(path: fixture.path)
