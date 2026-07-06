@@ -410,6 +410,18 @@ final class AppModel: ObservableObject {
         quickLookURL = URL(fileURLWithPath: pathString(of: node))
     }
 
+    /// Selection-operating actions for keyboard shortcuts. These read
+    /// `selected` at INVOCATION time — a shortcut's registered action
+    /// closure can go stale in SwiftUI, so it must never capture the node.
+    func toggleMarkSelection() {
+        guard let selected else { return }
+        toggleMark(selected)
+    }
+
+    func quickLookSelection() {
+        quickLook(selected)
+    }
+
     func isMarked(_ node: FileNode) -> Bool { trashQueue.covers(node) }
 
     func toggleMark(_ node: FileNode) {

@@ -387,21 +387,28 @@ struct TreemapView: View {
             }
             Spacer()
             if let selected = model.selected {
+                // Actions resolve the selection at keypress time via the
+                // model — a captured node can be stale when the shortcut
+                // fires (SwiftUI may keep the old registered action when
+                // only the closure changed), which marked the WRONG tile.
+                // .id() additionally forces re-registration per selection.
                 Button {
-                    model.quickLook(selected)
+                    model.quickLookSelection()
                 } label: {
                     Image(systemName: "eye")
                 }
                 .keyboardShortcut(.space, modifiers: [])
                 .controlSize(.small)
                 .help("Quick Look (Space)")
+                .id("ql-\(ObjectIdentifier(selected))")
                 Button(model.isMarked(selected)
                        ? "Unmark  ⌫"
                        : "Mark for Trash  ⌫") {
-                    model.toggleMark(selected)
+                    model.toggleMarkSelection()
                 }
                 .keyboardShortcut(.delete, modifiers: [])
                 .controlSize(.small)
+                .id("mark-\(ObjectIdentifier(selected))")
             }
         }
         .font(.system(size: 11))
