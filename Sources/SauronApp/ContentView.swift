@@ -124,7 +124,7 @@ struct ContentView: View {
             .help("Switch between the treemap and the largest-files list")
             Spacer()
             if let root = model.root, !model.isScanning {
-                Text("\(Format.bytes(model.size(of: root))) in \(friendlyName(model.scannedPath))\(model.showingPersisted ? " · from last scan" : "")")
+                Text("\(Format.bytes(model.size(of: root))) in \(friendlyName(model.scannedPath))")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -212,15 +212,18 @@ struct ContentView: View {
                 .font(.title2.bold())
             HStack(spacing: 16) {
                 scanChoice("house", "Scan Home",
-                           "Your user folder — downloads, projects, caches, and everything else you own.") {
+                           "Your user folder — downloads, projects, caches, and everything else you own.",
+                           savedAt: ScanStore.savedDate(for: NSHomeDirectory())) {
                     model.scan(path: NSHomeDirectory())
                 }
                 scanChoice("internaldrive", "Scan Disk",
-                           "The whole startup disk (Data volume) — everything user-writable on this Mac.") {
+                           "The whole startup disk (Data volume) — everything user-writable on this Mac.",
+                           savedAt: ScanStore.savedDate(for: "/System/Volumes/Data")) {
                     model.scan(path: "/System/Volumes/Data")
                 }
                 scanChoice("folder", "Scan a Folder…",
-                           "Pick any folder to analyze just that corner of the disk.") {
+                           "Pick any folder to analyze just that corner of the disk.",
+                           savedAt: nil) {
                     chooseFolder()
                 }
             }
@@ -259,6 +262,13 @@ struct ContentView: View {
                                 .font(.system(size: 11).monospacedDigit())
                                 .foregroundStyle(.secondary)
                                 .frame(width: 170, alignment: .leading)
+                            if let saved = ScanStore.savedDate(
+                                for: volume.path == "/" ? "/System/Volumes/Data" : volume.path) {
+                                Label(Self.savedFormatter.localizedString(for: saved, relativeTo: Date()),
+                                      systemImage: "clock.arrow.circlepath")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)
@@ -275,8 +285,14 @@ struct ContentView: View {
         }
     }
 
+    private static let savedFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
     private func scanChoice(_ symbol: String, _ title: String, _ detail: String,
-                            action: @escaping () -> Void) -> some View {
+                            savedAt: Date?, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 10) {
                 Image(systemName: symbol)
@@ -289,9 +305,15 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+                if let savedAt {
+                    Label("saved scan · \(Self.savedFormatter.localizedString(for: savedAt, relativeTo: Date()))",
+                          systemImage: "clock.arrow.circlepath")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
             }
             .padding(14)
-            .frame(width: 190, height: 160)
+            .frame(width: 190, height: 170)
             .background(
                 RoundedRectangle(cornerRadius: 12)
                     .fill(Color(nsColor: .controlBackgroundColor))

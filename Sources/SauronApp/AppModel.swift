@@ -1,24 +1,48 @@
 import SwiftUI
 import DiskCore
+import CryptoKit
 
-/// On-disk persistence of the last completed scan. Nonisolated on purpose:
-/// used from detached tasks; locking stays inside synchronous functions.
-private enum ScanStore {
-    static let url: URL = {
-        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+/// On-disk persistence of scans, one archive per scan root (keyed by a hash
+/// of the canonical path). Nonisolated on purpose: used from detached tasks;
+/// locking stays inside synchronous functions.
+enum ScanStore {
+    private static let dir: URL = {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("com.joshv.sauron", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("last-scan.sauronscan")
+        let scans = base.appendingPathComponent("scans", isDirectory: true)
+        try? FileManager.default.createDirectory(at: scans, withIntermediateDirectories: true)
+        // Clean up the short-lived single-archive scheme.
+        try? FileManager.default.removeItem(at: base.appendingPathComponent("last-scan.sauronscan"))
+        return scans
     }()
 
-    static func load() -> (root: FileNode, scannedPath: String, date: Date)? {
-        try? ScanArchive.load(from: url)
+    private static func url(for path: String) -> URL {
+        let canonical = Paths.canonical(path)
+        let hex = SHA256.hash(data: Data(canonical.utf8))
+            .map { String(format: "%02x", $0) }.joined().prefix(24)
+        return dir.appendingPathComponent("\(hex).sauronscan")
+    }
+
+    static func exists(for path: String) -> Bool {
+        FileManager.default.fileExists(atPath: url(for: path).path)
+    }
+
+    static func savedDate(for path: String) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url(for: path).path))?[.modificationDate] as? Date
+    }
+
+    static func load(for path: String) -> (root: FileNode, scannedPath: String, date: Date)? {
+        guard let loaded = try? ScanArchive.load(from: url(for: path)),
+              Paths.canonical(loaded.scannedPath) == Paths.canonical(path)
+        else { return nil }
+        return loaded
     }
 
     static func save(root: FileNode, scannedPath: String, lock: NSLock) {
         lock.lock()
         defer { lock.unlock() }
-        try? ScanArchive.save(root: root, scannedPath: scannedPath, date: Date(), to: url)
+        try? ScanArchive.save(root: root, scannedPath: scannedPath, date: Date(),
+                              to: url(for: scannedPath))
     }
 }
 
@@ -81,8 +105,6 @@ final class AppModel: ObservableObject {
     // scan is refreshing them in the background.
     @Published var showingCached = false
 
-    // True while the displayed tree came from a previous session's archive.
-    @Published var showingPersisted = false
 
     let treeLock = NSLock()
     private let trashQueue = TrashQueue()
@@ -109,26 +131,9 @@ final class AppModel: ObservableObject {
         }
         RunLoop.main.add(timer, forMode: .common)
         freeSpaceTimer = timer
-        loadPersistedScan()
     }
 
-    // MARK: - Persisted last scan
-
-    private func loadPersistedScan() {
-        Task.detached(priority: .utility) { [weak self] in
-            guard let loaded = ScanStore.load() else { return }
-            await MainActor.run { [weak self] in
-                guard let self, self.root == nil, !self.isScanning else { return }
-                self.root = loaded.root
-                self.navigation = [loaded.root]
-                self.scannedPath = loaded.scannedPath
-                self.showingPersisted = true
-                self.scanCache.store(root: loaded.root, path: loaded.scannedPath,
-                                     complete: true, date: loaded.date)
-                self.objectWillChange.send()
-            }
-        }
-    }
+    // MARK: - Persisted scans (one archive per scan root)
 
     /// Snapshot the current tree to disk (serialized under the tree lock).
     /// Called after completed scans and after any operation that changes it.
@@ -199,7 +204,6 @@ final class AppModel: ObservableObject {
 
     private func startScan(path: String) {
         isScanning = true
-        showingPersisted = false
         cancelRequested = false
         scanProgress.count = 0
         scanProgress.currentPath = ""
@@ -210,21 +214,43 @@ final class AppModel: ObservableObject {
         markedItems = []
         trashQueue.removeAll()
         lastError = nil
+        startScanRefreshTimer()
 
-        // Earlier results covering this path (including the partial tree of
-        // a scan the user just abandoned) display immediately; the fresh
-        // scan refreshes them in the background.
+        // Earlier results covering this path display immediately while the
+        // fresh scan refreshes them: first from the in-memory cache, then
+        // from the per-root archive saved in a previous session.
         if let cached = scanCache.lookup(path: path) {
             root = cached.node
             navigation = [cached.node]
             showingCached = true
+            launchScanTask(path: path)
+        } else if ScanStore.exists(for: path) {
+            root = nil
+            navigation = []
+            showingCached = false
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let loaded = ScanStore.load(for: path)
+                await MainActor.run { [weak self] in
+                    guard let self, self.isScanning, self.scannedPath == path else { return }
+                    if let loaded, self.root == nil {
+                        self.root = loaded.root
+                        self.navigation = [loaded.root]
+                        self.showingCached = true
+                        self.scanCache.store(root: loaded.root, path: loaded.scannedPath,
+                                             complete: true, date: loaded.date)
+                    }
+                    self.launchScanTask(path: path)
+                }
+            }
         } else {
             root = nil
             navigation = []
             showingCached = false
+            launchScanTask(path: path)
         }
-        startScanRefreshTimer()
+    }
 
+    private func launchScanTask(path: String) {
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             var lastUpdate = Date.distantPast
