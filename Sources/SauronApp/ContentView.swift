@@ -229,9 +229,6 @@ struct ContentView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
             volumeList
-            Text("Sizes are physical (allocated) bytes — sparse files show their real footprint.")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
             Spacer()
         }
         .frame(maxWidth: .infinity)
