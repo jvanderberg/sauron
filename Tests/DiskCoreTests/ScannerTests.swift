@@ -191,6 +191,47 @@ final class ScannerTests: XCTestCase {
         XCTAssertFalse(solo.isDirectory)
     }
 
+    func testCancelTokenStopsScan() throws {
+        for i in 0..<50 {
+            try writeFile("d/f\(i).bin", bytes: 1_000)
+        }
+        let token = CancelToken()
+        var calls = 0
+        let result = try Scanner.scan(path: fixture.path, progressEvery: 1, cancelToken: token,
+                                      progress: { _, _ in
+            calls += 1
+            if calls == 5 { token.cancel() }
+            return true
+        })
+        XCTAssertTrue(result.cancelled)
+        XCTAssertLessThan(result.entryCount, 50)
+    }
+
+    func testSkipPathsRecordsEmptyLeaf() throws {
+        try writeFile("keep/a.bin", bytes: 500_000)
+        try writeFile("skipme/b.bin", bytes: 700_000)
+        let skipDir = fixture.appendingPathComponent("skipme").path
+
+        let root = try Scanner.scan(path: fixture.path, skipPaths: [skipDir]).root
+        let skipped = try XCTUnwrap(root.children.first { $0.name == "skipme" })
+        XCTAssertTrue(skipped.isDirectory)
+        XCTAssertTrue(skipped.children.isEmpty)
+        XCTAssertLessThan(skipped.size, 100_000, "skipped contents must not be counted")
+        let kept = try XCTUnwrap(root.children.first { $0.name == "keep" })
+        XCTAssertGreaterThanOrEqual(kept.size, 500_000)
+    }
+
+    func testHeartbeatRecordsDirectories() throws {
+        try writeFile("h/deep/file.bin", bytes: 1_000)
+        let heartbeat = ScanHeartbeat()
+        let before = Date()
+        _ = try Scanner.scan(path: fixture.path, heartbeat: heartbeat)
+        let snap = heartbeat.snapshot
+        XCTAssertFalse(snap.directory.isEmpty)
+        XCTAssertTrue(snap.directory.hasPrefix(fixture.path))
+        XCTAssertGreaterThanOrEqual(snap.lastBeat, before)
+    }
+
     func testCloudStorageDescentIsSkipped() throws {
         try writeFile("Library/CloudStorage/FakeProvider/huge-placeholder.bin", bytes: 3_000_000)
         try writeFile("regular/normal.bin", bytes: 1_000_000)

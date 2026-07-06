@@ -113,7 +113,19 @@ final class AppModel: ObservableObject {
     let treeLock = NSLock()
     private let trashQueue = TrashQueue()
     private let scanCache = ScanCache()
-    private var cancelRequested = false
+    // Cancellation and liveness for the current scan. Token identity also
+    // distinguishes a live scan from an abandoned (stalled) one: results
+    // arriving with a stale token are ignored.
+    private var scanToken: CancelToken?
+    private var rescanToken: CancelToken?
+    private var scanHeartbeat: ScanHeartbeat?
+    private var stallTimer: Timer?
+    private var stallRestarts = 0
+    /// Directories that wedged a scan, learned at runtime and persisted —
+    /// future scans record them as empty leaves instead of hanging.
+    private var autoSkippedDirs: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "autoSkippedDirectories") ?? [])
+    private static let stallThreshold: TimeInterval = 30
     private var pendingScanPath: String?
     // Marked paths captured at scan start, re-resolved against the finished
     // tree so a same-path refresh doesn't wipe the trash list.
@@ -200,15 +212,15 @@ final class AppModel: ObservableObject {
     func scan(path: String) {
         if isScanning {
             pendingScanPath = path
-            cancelRequested = true
+            scanToken?.cancel()
             return
         }
+        stallRestarts = 0
         startScan(path: path)
     }
 
     private func startScan(path: String) {
         isScanning = true
-        cancelRequested = false
         scanProgress.count = 0
         scanProgress.currentPath = ""
         scanErrors = 0
@@ -255,6 +267,13 @@ final class AppModel: ObservableObject {
     }
 
     private func launchScanTask(path: String) {
+        let token = CancelToken()
+        let heartbeat = ScanHeartbeat()
+        scanToken = token
+        scanHeartbeat = heartbeat
+        startStallWatchdog()
+        let skips = autoSkippedDirs
+
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             var lastUpdate = Date.distantPast
@@ -263,9 +282,13 @@ final class AppModel: ObservableObject {
                     path: path,
                     lock: self.treeLock,
                     sortAtEnd: false,
+                    skipPaths: skips,
+                    heartbeat: heartbeat,
+                    cancelToken: token,
                     onRootReady: { newRoot in
                         Task { @MainActor [weak self] in
-                            guard let self, self.isScanning, self.scannedPath == path,
+                            guard let self, self.isScanning, self.scanToken === token,
+                                  self.scannedPath == path,
                                   !self.showingCached, self.root == nil else { return }
                             self.root = newRoot
                             self.navigation = [newRoot]
@@ -276,32 +299,81 @@ final class AppModel: ObservableObject {
                         if now.timeIntervalSince(lastUpdate) > 0.1 {
                             lastUpdate = now
                             Task { @MainActor [weak self] in
-                                self?.scanProgress.count = count
-                                self?.scanProgress.currentPath = current
+                                guard let self, self.scanToken === token else { return }
+                                self.scanProgress.count = count
+                                self.scanProgress.currentPath = current
                             }
                         }
-                        var cancelled = false
-                        DispatchQueue.main.sync { cancelled = self.cancelRequested }
-                        return !cancelled
+                        return true // cancellation flows through the token
                     }
                 )
                 await MainActor.run { [weak self] in
-                    self?.completeScan(result: result, path: path)
+                    self?.completeScan(result: result, path: path, token: token)
                 }
             } catch {
                 await MainActor.run { [weak self] in
-                    self?.lastError = "Scan failed: \(error)"
-                    self?.finishScan()
+                    guard let self, self.scanToken === token else { return }
+                    self.lastError = "Scan failed: \(error)"
+                    self.finishScan()
                 }
             }
         }
     }
 
     func cancelScan() {
-        cancelRequested = true
+        scanToken?.cancel()
+        rescanToken?.cancel()
     }
 
-    private func completeScan(result: ScanResult, path: String) {
+    // MARK: - Stall watchdog
+
+    private func startStallWatchdog() {
+        stallTimer?.invalidate()
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in self.checkForStall() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        stallTimer = timer
+    }
+
+    /// A scan thread wedged inside an unresponsive directory (dead cloud
+    /// provider, stale mount) blocks in the kernel where it can't be
+    /// cancelled. When the heartbeat goes quiet: orphan that scan (its
+    /// stale token makes its results ignorable), remember the guilty
+    /// directory so future scans skip it, and restart.
+    private func checkForStall() {
+        guard isScanning, let heartbeat = scanHeartbeat, let token = scanToken else { return }
+        let snap = heartbeat.snapshot
+        guard Date().timeIntervalSince(snap.lastBeat) > Self.stallThreshold else { return }
+
+        token.cancel()   // takes effect if the syscall ever returns
+        scanToken = nil  // orphan: completion with this token is ignored
+
+        guard stallRestarts < 3, !snap.directory.isEmpty else {
+            lastError = "Scan stalled repeatedly (last inside \(snap.directory)); giving up. See Help → Permissions."
+            finishScan()
+            return
+        }
+        stallRestarts += 1
+        autoSkippedDirs.insert(snap.directory)
+        UserDefaults.standard.set(Array(autoSkippedDirs), forKey: "autoSkippedDirectories")
+        lastError = "Skipped a folder that stopped responding and restarted the scan:\n\(snap.directory)"
+
+        // Fresh tree — the wedged thread may still mutate the old one if it
+        // ever unblocks (mutations are lock-guarded, but the data is tainted).
+        root = nil
+        navigation = []
+        showingCached = false
+        selected = nil
+        scanProgress.count = 0
+        scanProgress.currentPath = ""
+        launchScanTask(path: scannedPath)
+    }
+
+    private func completeScan(result: ScanResult, path: String, token: CancelToken) {
+        // Results from an orphaned (stalled-and-replaced) scan: discard.
+        guard scanToken === token else { return }
         scanProgress.count = result.entryCount
         scanErrors = result.errorCount
         scanCache.store(root: result.root, path: path, complete: !result.cancelled)
@@ -344,11 +416,16 @@ final class AppModel: ObservableObject {
 
     private func finishScan() {
         isScanning = false
+        scanToken = nil
+        scanHeartbeat = nil
+        stallTimer?.invalidate()
+        stallTimer = nil
         scanRefreshTimer?.invalidate()
         scanRefreshTimer = nil
         objectWillChange.send()
         if let pending = pendingScanPath {
             pendingScanPath = nil
+            stallRestarts = 0
             startScan(path: pending)
         }
     }
@@ -380,7 +457,8 @@ final class AppModel: ObservableObject {
             return
         }
         isRescanning = true
-        cancelRequested = false
+        let token = CancelToken()
+        rescanToken = token
         scanProgress.count = 0
         scanProgress.currentPath = ""
         lastError = nil
@@ -391,19 +469,19 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             var lastUpdate = Date.distantPast
             do {
-                let result = try DiskCore.Scanner.scan(path: path, sortAtEnd: false, progress: { count, current in
-                    let now = Date()
-                    if now.timeIntervalSince(lastUpdate) > 0.1 {
-                        lastUpdate = now
-                        Task { @MainActor [weak self] in
-                            self?.scanProgress.count = count
-                            self?.scanProgress.currentPath = current
+                let result = try DiskCore.Scanner.scan(
+                    path: path, sortAtEnd: false, cancelToken: token,
+                    progress: { count, current in
+                        let now = Date()
+                        if now.timeIntervalSince(lastUpdate) > 0.1 {
+                            lastUpdate = now
+                            Task { @MainActor [weak self] in
+                                self?.scanProgress.count = count
+                                self?.scanProgress.currentPath = current
+                            }
                         }
-                    }
-                    var cancelled = false
-                    DispatchQueue.main.sync { cancelled = self.cancelRequested }
-                    return !cancelled
-                })
+                        return true
+                    })
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     defer { self.isRescanning = false }

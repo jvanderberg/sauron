@@ -8,6 +8,53 @@ public struct ScanResult {
     public let cancelled: Bool
 }
 
+/// Thread-safe cancellation flag. A scan blocked inside a syscall cannot be
+/// interrupted, but once it returns, a cancelled token stops it at the next
+/// checkpoint — and lets abandoned scans be identified by token identity.
+public final class CancelToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    public init() {}
+
+    public func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    public var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+}
+
+/// Thread-safe liveness signal from a running scan. The scanner beats it on
+/// every directory it enters (with the path) and periodically between files;
+/// if the scanner wedges inside an unresponsive directory, the heartbeat
+/// freezes holding that directory's path — exact blame for a watchdog.
+public final class ScanHeartbeat: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastBeat = Date()
+    private var currentDirectory = ""
+
+    public init() {}
+
+    public func beat(directory: String?) {
+        lock.lock()
+        lastBeat = Date()
+        if let directory { currentDirectory = directory }
+        lock.unlock()
+    }
+
+    public var snapshot: (lastBeat: Date, directory: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (lastBeat, currentDirectory)
+    }
+}
+
 public enum ScanError: Error, CustomStringConvertible {
     case cannotOpen(String)
 
@@ -43,11 +90,20 @@ public enum Scanner {
     ///   per-level on read (like the app) should pass false.
     /// - onRootReady: called (on the scanning thread) as soon as the root
     ///   node exists, so callers can start displaying it.
+    /// - skipPaths: exact directory paths to record as empty leaves without
+    ///   descending (the watchdog's learned list of unresponsive folders).
+    /// - heartbeat: beaten with each directory entered; lets a watchdog
+    ///   detect a wedged scan and identify the guilty directory.
+    /// - cancelToken: checked at each progress interval alongside the
+    ///   progress callback's return value.
     public static func scan(
         path rawPath: String,
         lock: NSLock? = nil,
         progressEvery: Int = 4096,
         sortAtEnd: Bool = true,
+        skipPaths: Set<String> = [],
+        heartbeat: ScanHeartbeat? = nil,
+        cancelToken: CancelToken? = nil,
         onRootReady: ((FileNode) -> Void)? = nil,
         progress: Progress? = nil
     ) throws -> ScanResult {
@@ -80,17 +136,29 @@ public enum Scanner {
             let info = Int32(ent.pointee.fts_info)
             let level = Int(ent.pointee.fts_level)
             entryCount += 1
-            if progressEvery > 0, entryCount % progressEvery == 0, let progress {
-                let current = String(cString: ent.pointee.fts_path)
-                if !progress(entryCount, current) {
+            if progressEvery > 0, entryCount % progressEvery == 0 {
+                heartbeat?.beat(directory: nil)
+                if cancelToken?.isCancelled == true {
                     cancelled = true
                     break
+                }
+                if let progress {
+                    let current = String(cString: ent.pointee.fts_path)
+                    if !progress(entryCount, current) {
+                        cancelled = true
+                        break
+                    }
                 }
             }
 
             switch info {
             case FTS_D:
                 unwind(to: level)
+                var dirPath: String?
+                if heartbeat != nil || !skipPaths.isEmpty {
+                    dirPath = String(cString: ent.pointee.fts_path)
+                }
+                if let dirPath { heartbeat?.beat(directory: dirPath) }
                 // Firmlinks and mount points can expose the same directory
                 // under several paths (e.g. /Users and
                 // /System/Volumes/Data/Users). Traverse each physical
@@ -105,10 +173,12 @@ public enum Scanner {
                 // Hazard directories whose enumeration can block forever:
                 // cloud-provider roots (~/Library/CloudStorage — the
                 // provider daemon must answer, and hung providers wedge
-                // readdir) and the /Volumes mount stubs (a dead network
-                // mount hangs lstat). Their contents are mostly not on
-                // disk, so record the directory as an empty leaf and move on.
-                if !stack.isEmpty, shouldSkipDescent(ent) {
+                // readdir), the /Volumes mount stubs (a dead network mount
+                // hangs lstat), and any path the caller learned to avoid.
+                // Their contents are mostly not on disk, so record the
+                // directory as an empty leaf and move on.
+                let callerSkipped = dirPath.map { skipPaths.contains($0) } ?? false
+                if !stack.isEmpty, callerSkipped || shouldSkipDescent(ent) {
                     lock?.lock()
                     let node = FileNode(name: entName(ent), isDirectory: true,
                                         size: physicalSize(ent), parent: stack.last)
