@@ -1,6 +1,7 @@
 import SwiftUI
 import DiskCore
 import UniformTypeIdentifiers
+import QuickLook
 
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
@@ -64,6 +65,7 @@ struct ContentView: View {
 
             TrashPanel()
         }
+        .quickLookPreview($model.quickLookURL)
         .onAppear {
             // Lets tests/scripts drive the UI: SAURON_SCAN=/path swift run SauronApp
             if let path = ProcessInfo.processInfo.environment["SAURON_SCAN"],
@@ -216,12 +218,54 @@ struct ContentView: View {
                   systemImage: "square.and.arrow.down")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            volumeList
             Text("Sizes are physical (allocated) bytes — sparse files show their real footprint.")
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
             Spacer()
         }
         .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var volumeList: some View {
+        let volumes = Volume.mountedVolumes()
+        if !volumes.isEmpty {
+            VStack(spacing: 6) {
+                ForEach(volumes) { volume in
+                    Button {
+                        // "/" is the sealed system volume; the user's data
+                        // lives on the Data volume.
+                        model.scan(path: volume.path == "/" ? "/System/Volumes/Data" : volume.path)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: volume.isInternal ? "internaldrive" : "externaldrive")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 20)
+                            Text(volume.name)
+                                .frame(width: 140, alignment: .leading)
+                                .lineLimit(1)
+                            ProgressView(value: volume.usedFraction)
+                                .tint(volume.usedFraction > 0.9 ? .red : .accentColor)
+                                .frame(width: 180)
+                            Text("\(Format.bytes(volume.free)) free of \(Format.bytes(volume.total))")
+                                .font(.system(size: 11).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: 170, alignment: .leading)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color(nsColor: .controlBackgroundColor))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .help("Scan \(volume.name)")
+                }
+            }
+        }
     }
 
     private func scanChoice(_ symbol: String, _ title: String, _ detail: String,

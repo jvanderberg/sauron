@@ -45,12 +45,15 @@ public final class TrashQueue {
 
 public enum TrashError: Error, CustomStringConvertible {
     case moveFailed(path: String, underlying: Error)
+    case deleteFailed(path: String, underlying: Error)
     case emptyFailed(String)
 
     public var description: String {
         switch self {
         case .moveFailed(let path, let err):
             return "could not trash \(path): \(err.localizedDescription)"
+        case .deleteFailed(let path, let err):
+            return "could not delete \(path): \(err.localizedDescription)"
         case .emptyFailed(let msg):
             return "empty trash failed: \(msg)"
         }
@@ -70,6 +73,17 @@ public enum Trasher {
             throw TrashError.moveFailed(path: path, underlying: error)
         }
         return (resultURL as URL?) ?? url
+    }
+
+    /// Delete a file or directory immediately and irreversibly — no Trash,
+    /// no undo. Frees the space right away (modulo APFS snapshots).
+    public static func deletePermanently(path: String) throws {
+        let expanded = (path as NSString).expandingTildeInPath
+        do {
+            try FileManager.default.removeItem(atPath: expanded)
+        } catch {
+            throw TrashError.deleteFailed(path: path, underlying: error)
+        }
     }
 
     /// Physical size of everything currently in the user's trash.

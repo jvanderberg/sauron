@@ -4,6 +4,7 @@ import DiskCore
 struct TrashPanel: View {
     @EnvironmentObject var model: AppModel
     @State private var confirmEmpty = false
+    @State private var confirmPermanentDelete = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -75,6 +76,26 @@ struct TrashPanel: View {
                     .frame(maxWidth: .infinity)
                 }
                 .disabled(model.markedItems.isEmpty || model.isTrashing || model.isRescanning)
+
+                Button(role: .destructive) {
+                    confirmPermanentDelete = true
+                } label: {
+                    Label("Delete Permanently…", systemImage: "flame")
+                        .frame(maxWidth: .infinity)
+                }
+                .disabled(model.markedItems.isEmpty || model.isTrashing || model.isRescanning)
+                .help("Delete the marked items immediately — no Trash, no undo")
+                .confirmationDialog(
+                    "Permanently delete \(model.markedItems.count) item(s)?",
+                    isPresented: $confirmPermanentDelete
+                ) {
+                    Button("Delete \(Format.bytes(model.markedTotal)) Forever", role: .destructive) {
+                        model.deleteMarkedPermanently()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("These items will NOT go to the Trash. They are erased immediately and cannot be recovered by any means.")
+                }
 
                 Divider()
 

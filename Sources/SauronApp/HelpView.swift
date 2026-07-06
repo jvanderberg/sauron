@@ -42,7 +42,7 @@ struct HelpView: View {
                 • Right-click any tile for Mark/Unmark, Open, Copy, Copy Full \
                 Path, and Reveal in Finder.
                 • ⌘C copies the selected item (paste it in Finder); ⌥⌘C copies \
-                its full path as text.
+                its full path as text. Space Quick Looks the selection.
                 """)
 
                 section("Largest Files view", """
@@ -64,6 +64,9 @@ struct HelpView: View {
                 until the system confirms (macOS reclaims space asynchronously; \
                 snapshots can delay it). The figure matches Finder's accounting, \
                 which includes purgeable space and can exceed what `df` reports.
+                • Delete Permanently… erases the marked items immediately — no \
+                Trash, no undo, no recovery. Use it for things too big to stage \
+                through the Trash, and read the confirmation before you click.
                 """)
 
                 section("Permissions", """

@@ -74,6 +74,29 @@ final class TrashQueueTests: XCTestCase {
         try FileManager.default.removeItem(at: inTrash)
     }
 
+    func testDeletePermanentlyRemovesFilesAndDirectories() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sauron-perm-delete-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("nested"), withIntermediateDirectories: true)
+        try Data(repeating: 7, count: 1000).write(to: dir.appendingPathComponent("nested/f.bin"))
+
+        try Trasher.deletePermanently(path: dir.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path))
+
+        XCTAssertThrowsError(try Trasher.deletePermanently(path: dir.path),
+                             "deleting a missing path must throw")
+    }
+
+    func testMountedVolumesIncludesRoot() {
+        let volumes = Volume.mountedVolumes()
+        let root = volumes.first { $0.path == "/" }
+        XCTAssertNotNil(root, "root volume must be listed")
+        XCTAssertGreaterThan(root?.total ?? 0, 0)
+        XCTAssertGreaterThanOrEqual(root?.usedFraction ?? -1, 0)
+        XCTAssertLessThanOrEqual(root?.usedFraction ?? 2, 1)
+    }
+
     func testFreeSpaceIsPositive() {
         let free = Volume.freeSpace()
         XCTAssertNotNil(free)

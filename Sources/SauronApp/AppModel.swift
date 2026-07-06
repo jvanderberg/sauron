@@ -43,6 +43,9 @@ final class AppModel: ObservableObject {
     @Published var lastError: String?
     @Published var isTrashing = false
 
+    // Quick Look target (spacebar / context menu).
+    @Published var quickLookURL: URL?
+
     // Free space, with optimistic bump after emptying the trash (the OS can
     // take a while to report reclaimed space).
     @Published var actualFreeSpace: Int64 = 0
@@ -402,6 +405,11 @@ final class AppModel: ObservableObject {
         selected = node
     }
 
+    func quickLook(_ node: FileNode?) {
+        guard let node else { return }
+        quickLookURL = URL(fileURLWithPath: pathString(of: node))
+    }
+
     func isMarked(_ node: FileNode) -> Bool { trashQueue.covers(node) }
 
     func toggleMark(_ node: FileNode) {
@@ -455,6 +463,51 @@ final class AppModel: ObservableObject {
                 }
                 self.markedItems = self.trashQueue.items
                 self.isTrashing = false
+                if !finalErrors.isEmpty {
+                    self.lastError = finalErrors.joined(separator: "\n")
+                }
+            }
+        }
+    }
+
+    /// Delete everything marked immediately and irreversibly — no Trash.
+    /// The UI gates this behind an explicit, scary confirmation.
+    func deleteMarkedPermanently() {
+        guard !trashQueue.isEmpty, !isTrashing, !isRescanning else { return }
+        isTrashing = true
+        lastError = nil
+        let items = trashQueue.items.map { (node: $0, path: $0.path) }
+
+        Task.detached(priority: .userInitiated) { [weak self] in
+            var succeeded: [FileNode] = []
+            var errors: [String] = []
+            for item in items {
+                do {
+                    try Trasher.deletePermanently(path: item.path)
+                    succeeded.append(item.node)
+                } catch {
+                    errors.append("\(error)")
+                }
+            }
+            let finalSucceeded = succeeded
+            let finalErrors = errors
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for node in finalSucceeded {
+                    while let current = self.navigation.last, current.isDescendant(of: node) {
+                        self.navigation.removeLast()
+                    }
+                    if let sel = self.selected, sel.isDescendant(of: node) {
+                        self.selected = nil
+                    }
+                    self.trashQueue.remove(node)
+                    self.treeLock.lock()
+                    node.removeFromParent()
+                    self.treeLock.unlock()
+                }
+                self.markedItems = self.trashQueue.items
+                self.isTrashing = false
+                self.refreshFreeSpace()
                 if !finalErrors.isEmpty {
                     self.lastError = finalErrors.joined(separator: "\n")
                 }

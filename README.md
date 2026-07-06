@@ -42,6 +42,10 @@ make app        # build Sauron.app, then: open Sauron.app
   to where one lives.
 - **⟳ Rescan** re-scans just the folder you're looking at and splices the
   fresh numbers into the tree — cheap truth-up after deletions, no full rescan.
+- **Space** Quick Looks the selected item. The welcome screen lists every
+  mounted volume with a capacity bar — click one to scan it (externals too).
+- **Delete Permanently…** skips the Trash entirely for the marked items —
+  immediate, irreversible, behind its own confirmation.
 - **Switching scans never loses work.** Starting a new scan cancels the
   current one; every tree (partial or complete) is cached. If earlier data
   covers the new target — including through the `/System/Volumes/Data` ↔ `/`

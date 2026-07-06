@@ -358,6 +358,7 @@ struct TreemapView: View {
             if target.isDirectory && model.hasChildren(target) {
                 Button("Open \"\(target.name)\"") { model.drillDown(into: target) }
             }
+            Button("Quick Look") { model.quickLook(target) }
             Divider()
             Button("Copy") { model.copyToPasteboard(target, pathOnly: false) }
             Button("Copy Full Path") { model.copyToPasteboard(target, pathOnly: true) }
@@ -386,6 +387,14 @@ struct TreemapView: View {
             }
             Spacer()
             if let selected = model.selected {
+                Button {
+                    model.quickLook(selected)
+                } label: {
+                    Image(systemName: "eye")
+                }
+                .keyboardShortcut(.space, modifiers: [])
+                .controlSize(.small)
+                .help("Quick Look (Space)")
                 Button(model.isMarked(selected)
                        ? "Unmark  ⌫"
                        : "Mark for Trash  ⌫") {

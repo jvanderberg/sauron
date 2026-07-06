@@ -122,6 +122,7 @@ struct LargestFilesView: View {
             Button(marked ? "Unmark \"\(row.node.name)\"" : "Mark \"\(row.node.name)\" for Trash") {
                 model.toggleMark(row.node)
             }
+            Button("Quick Look") { model.quickLook(row.node) }
             Button("Show in Map") { model.showInMap(row.node) }
             Divider()
             Button("Copy") { model.copyToPasteboard(row.node, pathOnly: false) }
