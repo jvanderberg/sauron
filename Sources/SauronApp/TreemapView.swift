@@ -307,12 +307,20 @@ struct TreemapView: View {
                 let isSelected = model.selected === tile.node
                 let isHovered = hovered === tile.node
 
-                var color = isMarked
-                    ? Color(hue: 0, saturation: 0.85, brightness: 0.75)
-                    : heatColor(size: tile.size, maxSize: maxSize, isDirectory: tile.node.isDirectory)
-                if frame.opacity < 1 { color = color.opacity(frame.opacity) }
+                var (top, bottom) = isMarked
+                    ? (Color(hue: 0, saturation: 0.78, brightness: 0.82),
+                       Color(hue: 0, saturation: 0.90, brightness: 0.66))
+                    : heatColors(size: tile.size, maxSize: maxSize, isDirectory: tile.node.isDirectory)
+                if frame.opacity < 1 {
+                    top = top.opacity(frame.opacity)
+                    bottom = bottom.opacity(frame.opacity)
+                }
                 let shape = Path(roundedRect: inset, cornerRadius: 2)
-                context.fill(shape, with: .color(color))
+                // Subtle top-lit gradient for texture instead of a flat fill.
+                context.fill(shape, with: .linearGradient(
+                    Gradient(colors: [top, bottom]),
+                    startPoint: CGPoint(x: inset.midX, y: inset.minY),
+                    endPoint: CGPoint(x: inset.midX, y: inset.maxY)))
 
                 if isMarked {
                     // Diagonal hatching so marked tiles read as "condemned"
@@ -424,12 +432,17 @@ struct TreemapView: View {
 
     /// Blue (small) → orange (large) heat scale on a sqrt ramp so mid-sized
     /// items are still distinguishable. Pure red is reserved for tiles
-    /// marked for the trash.
-    private func heatColor(size: Int64, maxSize: Int64, isDirectory: Bool) -> Color {
+    /// marked for the trash. Returns a light/dark pair for the top-lit
+    /// gradient fill.
+    private func heatColors(size: Int64, maxSize: Int64, isDirectory: Bool) -> (Color, Color) {
         let fraction = maxSize > 0 ? Double(size) / Double(maxSize) : 0
         let t = fraction.squareRoot()
         let hue = 0.62 - 0.54 * t
-        return Color(hue: hue, saturation: isDirectory ? 0.65 : 0.45,
-                     brightness: isDirectory ? 0.80 : 0.70)
+        let saturation = isDirectory ? 0.65 : 0.45
+        let brightness = isDirectory ? 0.80 : 0.70
+        return (Color(hue: hue, saturation: max(0, saturation - 0.06),
+                      brightness: min(1, brightness + 0.07)),
+                Color(hue: hue, saturation: min(1, saturation + 0.05),
+                      brightness: max(0, brightness - 0.06)))
     }
 }
