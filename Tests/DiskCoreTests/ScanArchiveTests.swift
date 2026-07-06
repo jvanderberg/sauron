@@ -71,6 +71,26 @@ final class ScanArchiveTests: XCTestCase {
         XCTAssertNotNil(dir.children.first { $0.name == "big.bin" })
     }
 
+    func testFilteredCopyPreservesTotalsAndDropsSmallFiles() throws {
+        try write("dir/big.bin", bytes: 4_000_000)
+        try write("dir/small.bin", bytes: 5_000)
+        try write("top.bin", bytes: 2_000_000)
+
+        let original = try Scanner.scan(path: fixture.path).root
+        let copy = original.filteredCopy(minFileSize: 1_000_000)
+
+        XCTAssertEqual(copy.size, original.size)
+        XCTAssertFalse(copy === original)
+        let dir = try XCTUnwrap(copy.children.first { $0.name == "dir" })
+        let originalDir = try XCTUnwrap(original.children.first { $0.name == "dir" })
+        XCTAssertEqual(dir.size, originalDir.size, "aggregates survive the filter")
+        XCTAssertNil(dir.children.first { $0.name == "small.bin" })
+        XCTAssertNotNil(dir.children.first { $0.name == "big.bin" })
+        XCTAssertTrue(dir.parent === copy, "copied nodes are wired to copied parents")
+        // The copy is fully detached from the original tree.
+        XCTAssertFalse(dir === originalDir)
+    }
+
     func testLoadRejectsGarbage() throws {
         try Data(repeating: 0xFF, count: 512).write(to: archive)
         XCTAssertThrowsError(try ScanArchive.load(from: archive))

@@ -38,12 +38,16 @@ public enum Scanner {
     /// - lock: taken around every tree mutation. Pass one (and take it when
     ///   reading) to render the tree while the scan is still running.
     /// - progressEvery: how many entries between progress callbacks.
+    /// - sortAtEnd: recursively sort children by size when done. Sorting
+    ///   millions of nodes holds the lock for seconds — callers that sort
+    ///   per-level on read (like the app) should pass false.
     /// - onRootReady: called (on the scanning thread) as soon as the root
     ///   node exists, so callers can start displaying it.
     public static func scan(
         path rawPath: String,
         lock: NSLock? = nil,
         progressEvery: Int = 4096,
+        sortAtEnd: Bool = true,
         onRootReady: ((FileNode) -> Void)? = nil,
         progress: Progress? = nil
     ) throws -> ScanResult {
@@ -145,9 +149,11 @@ public enum Scanner {
         guard let rootNode = root ?? scanSingleFile(path: path) else {
             throw ScanError.cannotOpen(path)
         }
-        lock?.lock()
-        rootNode.sortBySize()
-        lock?.unlock()
+        if sortAtEnd {
+            lock?.lock()
+            rootNode.sortBySize()
+            lock?.unlock()
+        }
         return ScanResult(root: rootNode, entryCount: entryCount, errorCount: errorCount, cancelled: cancelled)
     }
 

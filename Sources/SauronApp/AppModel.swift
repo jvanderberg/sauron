@@ -39,10 +39,14 @@ enum ScanStore {
     }
 
     static func save(root: FileNode, scannedPath: String, lock: NSLock) {
+        // Hold the lock only for a filtered copy (~10% of nodes); the slow
+        // part — serialize + compress — runs on the private copy so UI
+        // reads never block behind it.
         lock.lock()
-        defer { lock.unlock() }
-        try? ScanArchive.save(root: root, scannedPath: scannedPath, date: Date(),
-                              to: url(for: scannedPath))
+        let snapshot = root.filteredCopy(minFileSize: 1_000_000)
+        lock.unlock()
+        try? ScanArchive.save(root: snapshot, scannedPath: scannedPath, date: Date(),
+                              to: url(for: scannedPath), minFileSize: 0)
     }
 }
 
@@ -258,6 +262,7 @@ final class AppModel: ObservableObject {
                 let result = try DiskCore.Scanner.scan(
                     path: path,
                     lock: self.treeLock,
+                    sortAtEnd: false,
                     onRootReady: { newRoot in
                         Task { @MainActor [weak self] in
                             guard let self, self.isScanning, self.scannedPath == path,
@@ -386,7 +391,7 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             var lastUpdate = Date.distantPast
             do {
-                let result = try DiskCore.Scanner.scan(path: path, progress: { count, current in
+                let result = try DiskCore.Scanner.scan(path: path, sortAtEnd: false, progress: { count, current in
                     let now = Date()
                     if now.timeIntervalSince(lastUpdate) > 0.1 {
                         lastUpdate = now

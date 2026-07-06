@@ -114,6 +114,20 @@ public final class FileNode {
         return result
     }
 
+    /// Deep copy of this subtree, omitting files below `minFileSize`
+    /// (directory aggregate sizes are preserved exactly). Used to snapshot a
+    /// live tree quickly under a lock so slow work (serialization) can run
+    /// on the copy without blocking readers.
+    public func filteredCopy(minFileSize: Int64, parent: FileNode? = nil) -> FileNode {
+        let copy = FileNode(name: name, isDirectory: isDirectory, size: size, parent: parent)
+        if isDirectory {
+            for child in children where child.isDirectory || child.size >= minFileSize {
+                copy.addChild(child.filteredCopy(minFileSize: minFileSize, parent: copy))
+            }
+        }
+        return copy
+    }
+
     /// Detach this node from the tree, subtracting its size from every
     /// ancestor. Used after a successful move-to-trash.
     public func removeFromParent() {
