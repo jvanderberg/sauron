@@ -91,11 +91,18 @@ struct ContentView: View {
                 if model.isRescanning {
                     ProgressView().controlSize(.small)
                         .frame(width: 30, height: 24)
+                } else if model.currentNode == nil || model.isScanning {
+                    // Disabled controls never show tooltips on macOS; keep
+                    // the hint alive on a non-disabled stand-in.
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 15, weight: .medium))
+                        .frame(width: 30, height: 24)
+                        .foregroundStyle(.tertiary)
+                        .help("Rescan (available once a scan is shown and idle)")
                 } else {
                     toolbarButton("arrow.clockwise", help: "Rescan the folder currently shown (fast — only this subtree)") {
                         model.rescanCurrent()
                     }
-                    .disabled(model.currentNode == nil || model.isScanning)
                 }
             }
             if model.isScanning || model.isRescanning {
@@ -144,6 +151,9 @@ struct ContentView: View {
                 .font(.system(size: 15, weight: .medium))
                 .frame(width: 30, height: 24)
                 .contentShape(Rectangle())
+                // .help on the LABEL: on macOS, help attached to borderless
+                // buttons themselves often never fires.
+                .help(help)
         }
         .buttonStyle(.borderless)
         .focusable(false)

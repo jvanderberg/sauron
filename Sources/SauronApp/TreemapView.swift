@@ -409,6 +409,9 @@ struct TreemapView: View {
                 }
                 .keyboardShortcut(.delete, modifiers: [])
                 .controlSize(.small)
+                .help(model.isMarked(selected)
+                      ? "Remove the selected item from the trash list (⌫)"
+                      : "Add the selected item to the trash list (⌫)")
                 .id("mark-\(ObjectIdentifier(selected))")
             }
         }
