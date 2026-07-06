@@ -32,25 +32,15 @@ struct TreemapView: View {
     @EnvironmentObject var model: AppModel
     let node: FileNode
 
-    /// Owns the redraw timer so it dies with the view.
-    private final class DisplayTimer {
-        var timer: Timer?
-        func stop() {
-            timer?.invalidate()
-            timer = nil
-        }
-        deinit { timer?.invalidate() }
-    }
-
     @State private var hovered: FileNode?
     @State private var targets: [TreemapTile] = []
     @State private var origins: [ObjectIdentifier: CGRect] = [:]
     @State private var animStart = Date.distantPast
     @State private var lastSize = CGSize.zero
     @State private var duration: TimeInterval = 1.0
+    @State private var easeOutMode = false
+    @State private var isAnimating = false
     @State private var lastNode: FileNode?
-    @State private var animationTick = 0
-    @State private var displayTimer = DisplayTimer()
     @State private var lastClickTime = Date.distantPast
     @State private var lastClickLocation = CGPoint.zero
 
@@ -62,12 +52,15 @@ struct TreemapView: View {
     var body: some View {
         VStack(spacing: 0) {
             GeometryReader { geo in
-                // Read the tick so timer-driven redraws invalidate this body.
-                // Drawing always samples real time (Date()), and the ramp
-                // clamps at its end — so even a missed redraw can never
-                // freeze the map; the next one lands on the final layout.
-                let _ = animationTick
-                canvas(frames: displayedFrames(at: Date(), size: geo.size))
+                // Display-link-synced frames (up to 120Hz on ProMotion),
+                // running only while a transition is in flight. Safe even if
+                // the pause wedges: the eased ramp clamps at t=1, so any
+                // frame drawn at any later date shows the final layout.
+                TimelineView(.animation(minimumInterval: nil, paused: !isAnimating)) { timeline in
+                    canvas(frames: displayedFrames(at: timeline.date, size: geo.size),
+                           settled: !isAnimating
+                               || timeline.date.timeIntervalSince(animStart) >= duration)
+                }
                 .gesture(
                     // One handler for every click. An ExclusiveGesture(double,
                     // single) would delay the single tap ~300ms to rule out a
@@ -160,10 +153,13 @@ struct TreemapView: View {
         guard newTargets != targets else { return }
         if animated, !targets.isEmpty {
             // Current interpolated positions become the starting points, so
-            // an update landing mid-animation continues smoothly.
+            // an update landing mid-animation continues smoothly. Ease-out:
+            // reflows retarget every 2s during scans, and restarting an
+            // ease-IN curve each time reads as a visible pulse.
             var current: [ObjectIdentifier: CGRect] = [:]
             for frame in interpolatedFrames(at: Date()) { current[frame.tile.id] = frame.rect }
-            beginAnimation(to: newTargets, origins: current, duration: Self.reflowDuration)
+            beginAnimation(to: newTargets, origins: current,
+                           duration: Self.reflowDuration, easeOut: true)
         } else {
             setInstantly(newTargets)
         }
@@ -193,14 +189,16 @@ struct TreemapView: View {
             // Down: new level starts squeezed inside the clicked tile.
             var starts: [ObjectIdentifier: CGRect] = [:]
             for tile in newTargets { starts[tile.id] = squeeze(tile.rect, into: container, viewport: size) }
-            beginAnimation(to: newTargets, origins: starts, duration: Self.zoomDuration)
+            beginAnimation(to: newTargets, origins: starts,
+                           duration: Self.zoomDuration, easeOut: false)
         } else if previous.isDescendant(of: current),
                   let container = newTargets.first(where: { previous.isDescendant(of: $0.node) })?.rect {
             // Up: new level starts magnified so the tile we're leaving fills
             // the viewport, then settles to identity.
             var starts: [ObjectIdentifier: CGRect] = [:]
             for tile in newTargets { starts[tile.id] = magnify(tile.rect, from: container, viewport: size) }
-            beginAnimation(to: newTargets, origins: starts, duration: Self.zoomDuration)
+            beginAnimation(to: newTargets, origins: starts,
+                           duration: Self.zoomDuration, easeOut: false)
         } else {
             // Unrelated levels (new scan, cache swap): no zoom.
             setInstantly(newTargets)
@@ -208,31 +206,29 @@ struct TreemapView: View {
     }
 
     private func setInstantly(_ newTargets: [TreemapTile]) {
-        displayTimer.stop()
         origins = [:]
         animStart = .distantPast
         targets = newTargets
-        animationTick &+= 1
+        isAnimating = false
     }
 
     private func beginAnimation(to newTargets: [TreemapTile],
                                 origins newOrigins: [ObjectIdentifier: CGRect],
-                                duration newDuration: TimeInterval) {
+                                duration newDuration: TimeInterval,
+                                easeOut: Bool) {
         origins = newOrigins
         duration = newDuration
+        easeOutMode = easeOut
         animStart = Date()
         targets = newTargets
-        // A plain repeating timer forces redraws for the transition window,
-        // then invalidates itself. No pausable clock, no flag hand-off: the
-        // draw path reads Date() directly, so state can't wedge.
-        displayTimer.stop()
-        let deadline = animStart.addingTimeInterval(newDuration + 0.1)
-        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { timer in
-            Task { @MainActor in animationTick &+= 1 }
-            if Date() >= deadline { timer.invalidate() }
+        isAnimating = true
+        // Unpause window ends shortly after the ramp completes. If a newer
+        // animation restarted the clock meanwhile, its own deadline governs.
+        DispatchQueue.main.asyncAfter(deadline: .now() + newDuration + 0.05) {
+            if Date().timeIntervalSince(animStart) >= newDuration {
+                isAnimating = false
+            }
         }
-        RunLoop.main.add(timer, forMode: .common)
-        displayTimer.timer = timer
     }
 
     /// Map a full-viewport rect down into `container` (drill-down start).
@@ -259,7 +255,7 @@ struct TreemapView: View {
     private func interpolatedFrames(at date: Date) -> [TileFrame] {
         let raw = date.timeIntervalSince(animStart) / max(duration, 0.001)
         let t = max(0, min(1, raw))
-        let eased = t * t * (3 - 2 * t)
+        let eased = easeOutMode ? 1 - (1 - t) * (1 - t) : t * t * (3 - 2 * t)
         return targets.map { tile in
             if let origin = origins[tile.id] {
                 return TileFrame(tile: tile, rect: lerp(origin, tile.rect, eased), opacity: 1)
@@ -295,8 +291,13 @@ struct TreemapView: View {
 
     // MARK: - Drawing
 
-    private func canvas(frames: [TileFrame]) -> some View {
+    private func canvas(frames: [TileFrame], settled: Bool) -> some View {
         let maxSize = frames.map(\.tile.size).max() ?? 1
+        // Text resolution is the most expensive part of a frame; while tiles
+        // are in motion, label only the big ones (small moving text is
+        // unreadable anyway) so 120Hz stays cheap.
+        let labelWidth: CGFloat = settled ? 60 : 110
+        let labelHeight: CGFloat = settled ? 24 : 44
         return Canvas { context, _ in
             for frame in frames {
                 let inset = frame.rect.insetBy(dx: 0.5, dy: 0.5)
@@ -315,18 +316,18 @@ struct TreemapView: View {
 
                 if isMarked {
                     // Diagonal hatching so marked tiles read as "condemned"
-                    // even next to naturally hot (orange) tiles.
-                    context.drawLayer { layer in
-                        layer.clip(to: shape)
-                        var hatch = Path()
-                        var x = inset.minX - inset.height
-                        while x < inset.maxX {
-                            hatch.move(to: CGPoint(x: x, y: inset.maxY))
-                            hatch.addLine(to: CGPoint(x: x + inset.height, y: inset.minY))
-                            x += 10
-                        }
-                        layer.stroke(hatch, with: .color(.white.opacity(0.35)), lineWidth: 2)
+                    // even next to naturally hot (orange) tiles. A clipped
+                    // copy of the context avoids a per-tile offscreen layer.
+                    var clipped = context
+                    clipped.clip(to: shape)
+                    var hatch = Path()
+                    var x = inset.minX - inset.height
+                    while x < inset.maxX {
+                        hatch.move(to: CGPoint(x: x, y: inset.maxY))
+                        hatch.addLine(to: CGPoint(x: x + inset.height, y: inset.minY))
+                        x += 10
                     }
+                    clipped.stroke(hatch, with: .color(.white.opacity(0.35)), lineWidth: 2)
                     context.stroke(shape, with: .color(.red), lineWidth: 2)
                 }
                 if isSelected {
@@ -335,7 +336,7 @@ struct TreemapView: View {
                     context.stroke(shape, with: .color(.white.opacity(0.7)), lineWidth: 1.5)
                 }
 
-                if inset.width > 60, inset.height > 24, frame.opacity == 1 {
+                if inset.width > labelWidth, inset.height > labelHeight, frame.opacity == 1 {
                     let name = tile.node.isDirectory ? tile.node.name + "/" : tile.node.name
                     let text = Text("\(name)\n\(Format.bytes(tile.size))")
                         .font(.system(size: 10, weight: .medium))
