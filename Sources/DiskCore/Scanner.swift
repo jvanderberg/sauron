@@ -103,6 +103,9 @@ public enum Scanner {
     ///   per-level on read (like the app) should pass false.
     /// - onRootReady: called (on the scanning thread) as soon as the root
     ///   node exists, so callers can start displaying it.
+    /// - skipHazards: apply the built-in skip list (CloudStorage, autofs
+    ///   triggers, sibling system volumes). The scan ROOT is never skipped,
+    ///   so explicitly scanning one of these locations always works.
     /// - skipPaths: exact directory paths to record as empty leaves without
     ///   descending (the watchdog's learned list of unresponsive folders).
     /// - heartbeat: beaten with each directory entered; lets a watchdog
@@ -114,6 +117,7 @@ public enum Scanner {
         lock: NSLock? = nil,
         progressEvery: Int = 4096,
         sortAtEnd: Bool = true,
+        skipHazards: Bool = true,
         skipPaths: Set<String> = [],
         heartbeat: ScanHeartbeat? = nil,
         cancelToken: CancelToken? = nil,
@@ -192,7 +196,7 @@ public enum Scanner {
                 // Their contents are mostly not on disk, so record the
                 // directory as an empty leaf and move on.
                 let callerSkipped = dirPath.map { skipPaths.contains($0) } ?? false
-                if !stack.isEmpty, callerSkipped || shouldSkipDescent(ent) {
+                if !stack.isEmpty, callerSkipped || (skipHazards && shouldSkipDescent(ent)) {
                     lock?.lock()
                     let node = FileNode(name: entName(ent), isDirectory: true,
                                         size: physicalSize(ent), parent: stack.last)

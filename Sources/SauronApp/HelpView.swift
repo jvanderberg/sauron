@@ -23,6 +23,10 @@ struct HelpView: View {
                 instantly ("showing earlier results") while a fresh scan refreshes it.
                 • ⟳ rescans just the folder you're viewing and splices in the fresh \
                 numbers. ✕ cancels a running scan.
+                • Hang-prone system locations (cloud storage placeholders, \
+                automounts, sibling system volumes) are skipped by default; \
+                scanning one directly always works, and Settings (⌘,) can \
+                disable the skips or un-learn folders recorded after stalls.
                 """)
 
                 section("Reading the map", """

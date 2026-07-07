@@ -22,6 +22,11 @@ struct SauronApp: App {
             HelpView()
         }
         .defaultSize(width: 560, height: 640)
+
+        Settings {
+            SettingsView()
+                .environmentObject(model)
+        }
     }
 }
 

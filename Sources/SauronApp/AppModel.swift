@@ -124,8 +124,22 @@ final class AppModel: ObservableObject {
     private var stallRestarts = 0
     /// Directories that wedged a scan, learned at runtime and persisted —
     /// future scans record them as empty leaves instead of hanging.
-    private var autoSkippedDirs: Set<String> =
-        Set(UserDefaults.standard.stringArray(forKey: "autoSkippedDirectories") ?? [])
+    /// Editable in Settings (⌘,).
+    @Published var autoSkippedDirs: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "autoSkippedDirectories") ?? []) {
+        didSet {
+            UserDefaults.standard.set(Array(autoSkippedDirs), forKey: "autoSkippedDirectories")
+        }
+    }
+
+    /// Built-in skip rules (CloudStorage, autofs, sibling system volumes);
+    /// off = scan absolutely everything. Takes effect on the next scan.
+    @Published var hazardSkipsEnabled: Bool =
+        UserDefaults.standard.object(forKey: "hazardSkipsEnabled") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(hazardSkipsEnabled, forKey: "hazardSkipsEnabled")
+        }
+    }
     private static let stallThreshold: TimeInterval = 30
     private var pendingScanPath: String?
     // Marked paths captured at scan start, re-resolved against the finished
@@ -275,6 +289,7 @@ final class AppModel: ObservableObject {
         scanHeartbeat = heartbeat
         startStallWatchdog()
         let skips = autoSkippedDirs
+        let hazardSkips = hazardSkipsEnabled
 
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
@@ -284,6 +299,7 @@ final class AppModel: ObservableObject {
                     path: path,
                     lock: self.treeLock,
                     sortAtEnd: false,
+                    skipHazards: hazardSkips,
                     skipPaths: skips,
                     heartbeat: heartbeat,
                     cancelToken: token,
@@ -359,7 +375,6 @@ final class AppModel: ObservableObject {
         }
         stallRestarts += 1
         autoSkippedDirs.insert(snap.directory)
-        UserDefaults.standard.set(Array(autoSkippedDirs), forKey: "autoSkippedDirectories")
         lastError = "Skipped a folder that stopped responding and restarted the scan:\n\(snap.directory)"
 
         // Fresh tree — the wedged thread may still mutate the old one if it
