@@ -39,6 +39,9 @@ struct AppCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") { model.checkForUpdates(interactive: true) }
+        }
         CommandGroup(replacing: .newItem) {}
         CommandGroup(replacing: .undoRedo) {}
         CommandGroup(replacing: .pasteboard) {

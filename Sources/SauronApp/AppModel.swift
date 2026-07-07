@@ -64,6 +64,7 @@ final class AppModel: ObservableObject {
     enum ViewMode: String, CaseIterable {
         case map
         case files
+        case changes
     }
     // Scan state. The tree is rendered *while* the scan runs: the scanner
     // mutates it under `treeLock`, and all UI reads go through the
@@ -80,10 +81,15 @@ final class AppModel: ObservableObject {
     // Navigation: breadcrumb stack, root first. Empty when nothing scanned.
     @Published var navigation: [FileNode] = []
 
-    // Map (treemap) vs Files (flat largest-files list) presentation.
+    // Map (treemap) vs Files (largest files) vs Changes (scan diff).
     @Published var viewMode: ViewMode = .map
     // Minimum size for the largest-files list; persisted across switches.
     @Published var fileCutoff: Int64 = 100_000_000
+
+    // Baseline for the Changes view: the archive of this location as it was
+    // BEFORE the current scan overwrote it.
+    @Published var baselineDate: Date?
+    private var baselineRoot: FileNode?
 
     // Selection (single click). Marking for trash is a separate, explicit act.
     @Published var selected: FileNode?
@@ -95,6 +101,15 @@ final class AppModel: ObservableObject {
 
     // Quick Look target (spacebar / context menu).
     @Published var quickLookURL: URL?
+
+    struct UpdateNotice: Identifiable {
+        let id = UUID()
+        let title: String
+        let message: String
+        let downloadURL: String?
+    }
+
+    @Published var updateNotice: UpdateNotice?
 
     // Free space, with optimistic bump after emptying the trash (the OS can
     // take a while to report reclaimed space).
@@ -162,6 +177,48 @@ final class AppModel: ObservableObject {
         }
         RunLoop.main.add(timer, forMode: .common)
         freeSpaceTimer = timer
+        // Quiet launch check; only speaks up if something newer exists.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            self?.checkForUpdates(interactive: false)
+        }
+    }
+
+    // MARK: - Updates
+
+    func checkForUpdates(interactive: Bool) {
+        guard let current = UpdateChecker.currentVersion else {
+            if interactive {
+                updateNotice = UpdateNotice(title: "Development Build",
+                                            message: "This build has no version stamp to compare.",
+                                            downloadURL: nil)
+            }
+            return
+        }
+        Task { @MainActor [weak self] in
+            do {
+                let latest = try await UpdateChecker.fetchLatest()
+                guard let self else { return }
+                if UpdateChecker.isNewer(latest.version, than: current) {
+                    self.updateNotice = UpdateNotice(
+                        title: "Sauron \(latest.version) is available",
+                        message: "You have \(current). The new version is signed, notarized, and a small download.",
+                        downloadURL: latest.url)
+                } else if interactive {
+                    self.updateNotice = UpdateNotice(
+                        title: "You're up to date",
+                        message: "Sauron \(current) is the latest release.",
+                        downloadURL: nil)
+                }
+            } catch {
+                if interactive {
+                    self?.updateNotice = UpdateNotice(
+                        title: "Couldn't check for updates",
+                        message: error.localizedDescription,
+                        downloadURL: nil)
+                }
+            }
+        }
     }
 
     // MARK: - Persisted scans (one archive per scan root)
@@ -246,15 +303,19 @@ final class AppModel: ObservableObject {
         markedItems = []
         trashQueue.removeAll()
         lastError = nil
+        baselineRoot = nil
+        baselineDate = nil
         startScanRefreshTimer()
 
         // Earlier results covering this path display immediately while the
         // fresh scan refreshes them: first from the in-memory cache, then
-        // from the per-root archive saved in a previous session.
+        // from the per-root archive saved in a previous session. The archive
+        // additionally becomes the BASELINE the Changes view diffs against.
         if let cached = scanCache.lookup(path: path) {
             root = cached.node
             navigation = [cached.node]
             showingCached = true
+            loadBaseline(for: path)
             launchScanTask(path: path)
         } else if ScanStore.exists(for: path) {
             root = nil
@@ -270,6 +331,8 @@ final class AppModel: ObservableObject {
                         self.showingCached = true
                         self.scanCache.store(root: loaded.root, path: loaded.scannedPath,
                                              complete: true, date: loaded.date)
+                        self.baselineRoot = loaded.root
+                        self.baselineDate = loaded.date
                     }
                     self.launchScanTask(path: path)
                 }
@@ -278,8 +341,29 @@ final class AppModel: ObservableObject {
             root = nil
             navigation = []
             showingCached = false
+            loadBaseline(for: path)
             launchScanTask(path: path)
         }
+    }
+
+    private func loadBaseline(for path: String) {
+        Task.detached(priority: .utility) { [weak self] in
+            guard let loaded = ScanStore.load(for: path) else { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.scannedPath == path else { return }
+                self.baselineRoot = loaded.root
+                self.baselineDate = loaded.date
+            }
+        }
+    }
+
+    /// What changed since the baseline archive of this location. Computed on
+    /// demand; unchanged subtrees prune by aggregate size, so this is cheap.
+    func changes(minDelta: Int64) -> [TreeChange] {
+        guard let baselineRoot, let root else { return [] }
+        treeLock.lock()
+        defer { treeLock.unlock() }
+        return TreeDiff.changes(from: baselineRoot, to: root, minDelta: minDelta)
     }
 
     private func launchScanTask(path: String) {

@@ -49,7 +49,7 @@ jobs:
           NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
-        run: make dist
+        run: VERSION="${GITHUB_REF_NAME#v}" make dist
 
       - name: Verify Gatekeeper acceptance
         run: |

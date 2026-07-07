@@ -49,6 +49,15 @@ struct HelpView: View {
                 its full path as text. Space Quick Looks the selection.
                 """)
 
+                section("Changes view", """
+                • The third switcher position compares this scan against the \
+                previous scan of the same location and lists what grew, shrank, \
+                appeared, or vanished — blamed on the deepest responsible file \
+                or folder. Red consumed space; green freed it.
+                • The slider sets the minimum change size. Right-click a row \
+                for Show in Map or Reveal in Finder.
+                """)
+
                 section("Largest Files view", """
                 • The switcher in the toolbar flips between the map and a flat list \
                 of the biggest files found anywhere in the scan.

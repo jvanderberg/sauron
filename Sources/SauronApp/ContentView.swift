@@ -30,10 +30,10 @@ struct ContentView: View {
                     if model.isScanning || model.isRescanning {
                         ScanProgressStrip(progress: model.scanProgress, mode: stripMode)
                     }
-                    if model.viewMode == .map {
-                        TreemapView(node: current)
-                    } else {
-                        LargestFilesView()
+                    switch model.viewMode {
+                    case .map: TreemapView(node: current)
+                    case .files: LargestFilesView()
+                    case .changes: ChangesView()
                     }
                 } else if model.isScanning {
                     ScanStartingView(progress: model.scanProgress)
@@ -67,6 +67,19 @@ struct ContentView: View {
             TrashPanel()
         }
         .quickLookPreview($model.quickLookURL)
+        .alert(item: $model.updateNotice) { notice in
+            if let url = notice.downloadURL {
+                return Alert(
+                    title: Text(notice.title),
+                    message: Text(notice.message),
+                    primaryButton: .default(Text("View Release")) {
+                        if let link = URL(string: url) { NSWorkspace.shared.open(link) }
+                    },
+                    secondaryButton: .cancel(Text("Later")))
+            }
+            return Alert(title: Text(notice.title), message: Text(notice.message),
+                         dismissButton: .default(Text("OK")))
+        }
         .onAppear {
             // Lets tests/scripts drive the UI: SAURON_SCAN=/path swift run SauronApp
             if let path = ProcessInfo.processInfo.environment["SAURON_SCAN"],
@@ -118,11 +131,13 @@ struct ContentView: View {
                     .help("Treemap")
                 Image(systemName: "list.bullet").tag(AppModel.ViewMode.files)
                     .help("Largest files")
+                Image(systemName: "arrow.up.arrow.down").tag(AppModel.ViewMode.changes)
+                    .help("Changes since the previous scan")
             }
             .pickerStyle(.segmented)
-            .frame(width: 88)
+            .frame(width: 126)
             .disabled(model.currentNode == nil)
-            .help("Switch between the treemap and the largest-files list")
+            .help("Treemap · largest files · changes since last scan")
             Spacer()
             if let root = model.root, !model.isScanning {
                 Text("\(Format.bytes(model.size(of: root))) in \(friendlyName(model.scannedPath))")
