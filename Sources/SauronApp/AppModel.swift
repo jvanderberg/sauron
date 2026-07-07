@@ -72,6 +72,7 @@ final class AppModel: ObservableObject {
     @Published var isScanning = false
     @Published var isRescanning = false
     @Published var scanErrors = 0
+    @Published var scanIssues: [ScanIssue] = []
     @Published var scannedPath = ""
 
     let scanProgress = ScanProgress()
@@ -224,6 +225,7 @@ final class AppModel: ObservableObject {
         scanProgress.count = 0
         scanProgress.currentPath = ""
         scanErrors = 0
+        scanIssues = []
         scannedPath = path
         selected = nil
         stashedMarkedPaths = trashQueue.items.map(\.path)
@@ -376,6 +378,7 @@ final class AppModel: ObservableObject {
         guard scanToken === token else { return }
         scanProgress.count = result.entryCount
         scanErrors = result.errorCount
+        scanIssues = result.issues
         scanCache.store(root: result.root, path: path, complete: !result.cancelled)
 
         if showingCached {

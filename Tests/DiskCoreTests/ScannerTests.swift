@@ -191,6 +191,20 @@ final class ScannerTests: XCTestCase {
         XCTAssertFalse(solo.isDirectory)
     }
 
+    func testUnreadableDirectoryIsReportedWithReason() throws {
+        try XCTSkipIf(geteuid() == 0, "root can read anything")
+        try writeFile("locked/secret.bin", bytes: 1_000)
+        let locked = fixture.appendingPathComponent("locked")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
+
+        let result = try Scanner.scan(path: fixture.path)
+        XCTAssertGreaterThanOrEqual(result.errorCount, 1)
+        let issue = try XCTUnwrap(result.issues.first { $0.path.hasSuffix("/locked") })
+        XCTAssertTrue(issue.reason.localizedCaseInsensitiveContains("permission"),
+                      "expected a permission reason, got: \(issue.reason)")
+    }
+
     func testCancelTokenStopsScan() throws {
         for i in 0..<50 {
             try writeFile("d/f\(i).bin", bytes: 1_000)

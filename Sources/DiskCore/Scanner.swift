@@ -1,10 +1,20 @@
 import Foundation
 import Darwin
 
+/// A path the scanner could not read, with the OS's stated reason.
+public struct ScanIssue: Identifiable {
+    public let path: String
+    public let reason: String
+
+    public var id: String { path }
+}
+
 public struct ScanResult {
     public let root: FileNode
     public let entryCount: Int
     public let errorCount: Int
+    /// Details for the first `Scanner.maxRecordedIssues` errors.
+    public let issues: [ScanIssue]
     public let cancelled: Bool
 }
 
@@ -78,6 +88,9 @@ public enum Scanner {
     /// Return false to cancel the scan; the partial tree is still returned.
     public typealias Progress = (Int, String) -> Bool
 
+    /// Cap on recorded issue details (the count keeps counting past it).
+    public static let maxRecordedIssues = 500
+
     /// Scan a directory tree.
     ///
     /// Sizes propagate to every ancestor as each entry is visited, so the
@@ -121,6 +134,7 @@ public enum Scanner {
         var visitedDirs = Set<InodeKey>()
         var entryCount = 0
         var errorCount = 0
+        var issues: [ScanIssue] = []
         var cancelled = false
 
         // The stack is kept in sync with fts_level rather than trusting a
@@ -226,6 +240,12 @@ public enum Scanner {
 
             case FTS_DNR, FTS_ERR, FTS_NS:
                 errorCount += 1
+                if issues.count < Self.maxRecordedIssues {
+                    let errno = ent.pointee.fts_errno
+                    issues.append(ScanIssue(
+                        path: String(cString: ent.pointee.fts_path),
+                        reason: errno != 0 ? String(cString: strerror(errno)) : "unreadable"))
+                }
 
             default:
                 break
@@ -240,7 +260,8 @@ public enum Scanner {
             rootNode.sortBySize()
             lock?.unlock()
         }
-        return ScanResult(root: rootNode, entryCount: entryCount, errorCount: errorCount, cancelled: cancelled)
+        return ScanResult(root: rootNode, entryCount: entryCount, errorCount: errorCount,
+                          issues: issues, cancelled: cancelled)
     }
 
     /// fts on a plain file (not a directory) yields a single FTS_F at level 0

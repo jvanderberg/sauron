@@ -7,6 +7,7 @@ struct ContentView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
     @State private var isDropTargeted = false
+    @State private var showUnreadable = false
 
     /// "/System/Volumes/Data" is where all user-writable data on the startup
     /// disk actually lives; show a human name instead of the firmlink path.
@@ -130,10 +131,20 @@ struct ContentView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if model.scanErrors > 0 {
-                    Text("\(model.scanErrors) unreadable")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.orange)
-                        .help("Some directories could not be read — grant Full Disk Access for complete results")
+                    Button {
+                        showUnreadable = true
+                    } label: {
+                        Text("\(model.scanErrors) unreadable")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.orange)
+                            .underline()
+                            .help("Show which items couldn't be read, and why")
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .popover(isPresented: $showUnreadable, arrowEdge: .bottom) {
+                        UnreadableListView(issues: model.scanIssues, total: model.scanErrors)
+                    }
                 }
             }
             toolbarButton("questionmark.circle", help: "Sauron Help (⌘?)") {
@@ -336,6 +347,72 @@ struct ContentView: View {
         if panel.runModal() == .OK, let url = panel.url {
             model.scan(path: url.path)
         }
+    }
+}
+
+/// The unreadable-items report behind the toolbar's "N unreadable" label:
+/// each failed path with the OS's stated reason.
+private struct UnreadableListView: View {
+    let issues: [ScanIssue]
+    let total: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Unreadable items")
+                    .font(.headline)
+                Spacer()
+                Button("Copy List") {
+                    let text = issues.map { "\($0.path) — \($0.reason)" }.joined(separator: "\n")
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                }
+                .controlSize(.small)
+            }
+            Text("Usually fixed by granting Sauron Full Disk Access in System Settings → Privacy & Security.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Divider()
+            if issues.isEmpty {
+                Text("No details were recorded for this scan.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(issues) { issue in
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(issue.path)
+                                    .font(.system(size: 11))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text(issue.reason)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.orange)
+                            }
+                            .contextMenu {
+                                Button("Reveal in Finder") {
+                                    NSWorkspace.shared.activateFileViewerSelecting(
+                                        [URL(fileURLWithPath: issue.path)])
+                                }
+                                Button("Copy Path") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(issue.path, forType: .string)
+                                }
+                            }
+                        }
+                        if total > issues.count {
+                            Text("…and \(total - issues.count) more (first \(issues.count) shown).")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .frame(maxHeight: 300)
+            }
+        }
+        .padding(14)
+        .frame(width: 480)
     }
 }
 
