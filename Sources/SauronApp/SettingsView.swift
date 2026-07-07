@@ -3,6 +3,19 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @State private var showSkipInfo = false
+    @State private var hasFullDiskAccess = SettingsView.checkFullDiskAccess()
+
+    /// TCC-protected even for the owning user: readable only with FDA.
+    static func checkFullDiskAccess() -> Bool {
+        (try? FileManager.default.contentsOfDirectory(
+            atPath: NSHomeDirectory() + "/Library/Safari")) != nil
+    }
+
+    static func openFullDiskAccessSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+            NSWorkspace.shared.open(url)
+        }
+    }
 
     var body: some View {
         Form {
@@ -29,6 +42,30 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             } header: {
                 Text("Scanning")
+            }
+
+            Section {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(hasFullDiskAccess ? Color.green : Color.orange)
+                        .frame(width: 9, height: 9)
+                    Text(hasFullDiskAccess
+                         ? "Full Disk Access granted"
+                         : "Full Disk Access not granted — some folders will show as unreadable")
+                        .font(.system(size: 12))
+                    Spacer()
+                    Button("Open System Settings…") {
+                        Self.openFullDiskAccessSettings()
+                    }
+                    .controlSize(.small)
+                }
+                if !hasFullDiskAccess {
+                    Text("In System Settings, add Sauron under Privacy & Security → Full Disk Access, then quit and reopen Sauron.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Permissions")
             }
 
             Section {
@@ -65,6 +102,7 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 520)
         .frame(minHeight: 300)
+        .onAppear { hasFullDiskAccess = Self.checkFullDiskAccess() }
     }
 
     private var skipInfo: some View {

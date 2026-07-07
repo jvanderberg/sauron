@@ -412,9 +412,15 @@ private struct UnreadableListView: View {
                 }
                 .controlSize(.small)
             }
-            Text("Usually fixed by granting Sauron Full Disk Access in System Settings → Privacy & Security.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            HStack {
+                Text("Usually fixed by granting Sauron Full Disk Access.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Button("Open System Settings…") {
+                    SettingsView.openFullDiskAccessSettings()
+                }
+                .controlSize(.small)
+            }
             Divider()
             if issues.isEmpty {
                 Text("No details were recorded for this scan.")
