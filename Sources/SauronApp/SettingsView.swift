@@ -6,7 +6,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Skip system and cloud storage", isOn: $model.hazardSkipsEnabled)
+                Toggle("Skip system folders and cloud storage", isOn: $model.hazardSkipsEnabled)
                 Text("Cloud placeholders take no real disk space, and reading them can hang the scan. Scanning one of these folders directly always works. Applies to the next scan.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
