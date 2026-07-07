@@ -32,6 +32,7 @@ struct TreemapView: View {
     @EnvironmentObject var model: AppModel
     let node: FileNode
 
+    @FocusState private var mapFocused: Bool
     @State private var hovered: FileNode?
     @State private var targets: [TreemapTile] = []
     @State private var origins: [ObjectIdentifier: CGRect] = [:]
@@ -82,6 +83,7 @@ struct TreemapView: View {
                             if !isDouble { model.select(nil) }
                             return
                         }
+                        mapFocused = true
                         if isDouble {
                             model.drillDown(into: frame.tile.node)
                         } else {
@@ -98,16 +100,34 @@ struct TreemapView: View {
                     }
                 }
                 .contextMenu { contextMenuItems() }
+                .focusable()
+                .focusEffectDisabled()
+                .focused($mapFocused)
+                .overlay {
+                    if mapFocused {
+                        Rectangle()
+                            .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 2)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .onChange(of: mapFocused) { _, focused in
+                    if focused, model.selected == nil {
+                        selectLargest()
+                    }
+                }
+                .onKeyPress { press in
+                    handleKey(press.key)
+                }
                 .onAppear {
                     lastSize = geo.size
                     lastNode = node
                     relayout(size: geo.size, animated: false)
                 }
-                .onChange(of: geo.size) { newSize in
+                .onChange(of: geo.size) { _, newSize in
                     lastSize = newSize
                     relayout(size: newSize, animated: false)
                 }
-                .onChange(of: ObjectIdentifier(node)) { _ in
+                .onChange(of: ObjectIdentifier(node)) { _, _ in
                     navigationRelayout(size: lastSize)
                 }
                 .onReceive(model.objectWillChange) { _ in
@@ -123,6 +143,72 @@ struct TreemapView: View {
             }
             statusBar
         }
+    }
+
+    // MARK: - Keyboard navigation
+
+    private func selectLargest() {
+        // Targets are sorted largest-first.
+        if let largest = targets.first {
+            model.select(largest.node)
+        }
+    }
+
+    private func handleKey(_ key: KeyEquivalent) -> KeyPress.Result {
+        switch key {
+        case .upArrow: return moveSelection(dx: 0, dy: -1)
+        case .downArrow: return moveSelection(dx: 0, dy: 1)
+        case .leftArrow: return moveSelection(dx: -1, dy: 0)
+        case .rightArrow: return moveSelection(dx: 1, dy: 0)
+        case .return:
+            guard let selected = model.selected else { return .ignored }
+            if selected.isDirectory, model.hasChildren(selected) {
+                model.drillDown(into: selected)
+                DispatchQueue.main.async { selectLargest() }
+            } else {
+                model.quickLook(selected)
+            }
+            return .handled
+        case .escape:
+            guard model.navigation.count > 1 else { return .ignored }
+            let leaving = model.currentNode
+            model.navigateUp()
+            // Land on the tile we just climbed out of.
+            DispatchQueue.main.async {
+                if let leaving { model.select(leaving) } else { selectLargest() }
+            }
+            return .handled
+        default:
+            return .ignored
+        }
+    }
+
+    /// Spatial move: nearest tile whose center lies in the pressed direction,
+    /// preferring straight-ahead over lateral drift.
+    private func moveSelection(dx: CGFloat, dy: CGFloat) -> KeyPress.Result {
+        guard let selected = model.selected,
+              let currentTile = targets.first(where: { $0.node === selected }) else {
+            selectLargest()
+            return .handled
+        }
+        let from = CGPoint(x: currentTile.rect.midX, y: currentTile.rect.midY)
+        var best: (tile: TreemapTile, score: CGFloat)?
+        for tile in targets where tile.node !== selected {
+            let to = CGPoint(x: tile.rect.midX, y: tile.rect.midY)
+            let vx = to.x - from.x
+            let vy = to.y - from.y
+            let forward = vx * dx + vy * dy
+            guard forward > 0.5 else { continue }
+            let lateral = abs(vx * dy) + abs(vy * dx)
+            let score = forward + 2.5 * lateral
+            if best == nil || score < best!.score {
+                best = (tile, score)
+            }
+        }
+        if let best {
+            model.select(best.tile.node)
+        }
+        return .handled
     }
 
     // MARK: - Layout & animation

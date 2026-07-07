@@ -47,6 +47,9 @@ struct HelpView: View {
                 Path, and Reveal in Finder.
                 • ⌘C copies the selected item (paste it in Finder); ⌥⌘C copies \
                 its full path as text. Space Quick Looks the selection.
+                • Full keyboard control: Tab focuses the map (selecting the \
+                largest tile), arrow keys move between tiles, Return opens a \
+                folder (or Quick Looks a file), Esc goes up a level.
                 """)
 
                 section("Changes view", """

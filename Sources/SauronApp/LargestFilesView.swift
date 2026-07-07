@@ -53,7 +53,7 @@ struct LargestFilesView: View {
             }
             detentIndex = Double(nearest?.offset ?? 1)
         }
-        .onChange(of: detentIndex) { _ in
+        .onChange(of: detentIndex) { _, _ in
             model.fileCutoff = cutoff
         }
     }
