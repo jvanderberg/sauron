@@ -49,5 +49,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --sign - "$APP" 2>/dev/null || true
+# Prefer the Developer ID so local builds share a TCC identity with
+# notarized releases (Full Disk Access grants survive updates); fall back
+# to ad-hoc on machines without the certificate.
+IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+codesign --force --sign "${IDENTITY:--}" "$APP" 2>/dev/null || true
 echo "Built $APP — open with: open $APP"
