@@ -264,22 +264,29 @@ struct ContentView: View {
                                 .foregroundStyle(.secondary)
                                 .frame(width: 20)
                             Text(volume.name)
-                                .frame(width: 140, alignment: .leading)
+                                .frame(width: 150, alignment: .leading)
                                 .lineLimit(1)
                             ProgressView(value: volume.usedFraction)
                                 .tint(volume.usedFraction > 0.9 ? .red : .accentColor)
-                                .frame(width: 180)
+                                .frame(width: 170)
                             Text("\(Format.bytes(volume.free)) free of \(Format.bytes(volume.total))")
                                 .font(.system(size: 11).monospacedDigit())
                                 .foregroundStyle(.secondary)
-                                .frame(width: 170, alignment: .leading)
-                            if let saved = ScanStore.savedDate(
-                                for: volume.path == "/" ? "/System/Volumes/Data" : volume.path) {
-                                Label(Self.savedFormatter.localizedString(for: saved, relativeTo: Date()),
-                                      systemImage: "clock.arrow.circlepath")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.tertiary)
+                                .frame(width: 190, alignment: .leading)
+                            // Badge column is always reserved so every row
+                            // has identical width and the columns line up.
+                            Group {
+                                if let saved = ScanStore.savedDate(
+                                    for: volume.path == "/" ? "/System/Volumes/Data" : volume.path) {
+                                    Label(Self.savedFormatter.localizedString(for: saved, relativeTo: Date()),
+                                          systemImage: "clock.arrow.circlepath")
+                                } else {
+                                    Text("")
+                                }
                             }
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 70, alignment: .trailing)
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)
