@@ -7,26 +7,28 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Skip system folders and cloud storage", isOn: $model.hazardSkipsEnabled)
+                Toggle(isOn: $model.hazardSkipsEnabled) {
+                    HStack(spacing: 5) {
+                        Text("Skip system folders and cloud storage")
+                        Button {
+                            showSkipInfo = true
+                        } label: {
+                            Image(systemName: "questionmark.circle")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .focusable(false)
+                        .help("Show exactly which locations are skipped")
+                        .popover(isPresented: $showSkipInfo, arrowEdge: .trailing) {
+                            skipInfo
+                        }
+                    }
+                }
                 Text("Cloud placeholders take no real disk space, and reading them can hang the scan. Scanning one of these folders directly always works. Applies to the next scan.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             } header: {
-                HStack(spacing: 5) {
-                    Text("Scanning")
-                    Button {
-                        showSkipInfo = true
-                    } label: {
-                        Image(systemName: "questionmark.circle")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .focusable(false)
-                    .help("Show exactly which locations are skipped")
-                    .popover(isPresented: $showSkipInfo, arrowEdge: .trailing) {
-                        skipInfo
-                    }
-                }
+                Text("Scanning")
             }
 
             Section {
