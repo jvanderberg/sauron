@@ -98,6 +98,7 @@ struct LargestFilesView: View {
             } maximumValueLabel: {
                 Text("500 GB").font(.system(size: 9)).foregroundStyle(.secondary)
             }
+            .focusable(false)
             .frame(maxWidth: 340)
             Spacer()
             Text(count == 500 ? "500+ files" : "\(count) files")

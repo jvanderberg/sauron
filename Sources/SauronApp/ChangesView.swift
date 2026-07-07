@@ -78,6 +78,7 @@ struct ChangesView: View {
                 ),
                 in: 0...Double(Self.detents.count - 1)
             )
+            .focusable(false)
             .frame(maxWidth: 240)
             Spacer()
             Text(count == 500 ? "500+ changes" : "\(count) changes")
