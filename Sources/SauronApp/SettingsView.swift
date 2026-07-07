@@ -6,8 +6,8 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Skip hang-prone system locations", isOn: $model.hazardSkipsEnabled)
-                Text("Cloud-storage placeholders (~/Library/CloudStorage), automount triggers (/home, /net), external-volume stubs, and sibling system volumes. Their enumeration can hang and their contents occupy little or no real disk space. Scanning one of these locations directly always works regardless — this only affects traversal. Takes effect on the next scan.")
+                Toggle("Skip system and cloud storage", isOn: $model.hazardSkipsEnabled)
+                Text("Cloud placeholders take no real disk space, and reading them can hang the scan. Scanning one of these folders directly always works. Applies to the next scan.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             } header: {
