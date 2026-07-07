@@ -31,6 +31,25 @@ struct ChangesView: View {
                 Spacer()
             }
             .frame(maxWidth: .infinity)
+        } else if model.baselineAccessChanged {
+            VStack(spacing: 6) {
+                Spacer()
+                Image(systemName: "lock.open")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.tertiary)
+                Text("Comparison spans a permissions change")
+                    .font(.headline)
+                Text("The last scan could read folders the baseline couldn't (you likely granted Full Disk Access since then), so a comparison would flag them as new even though nothing was added.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+                Text("Scan this location once more for a clean before/after.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity)
         } else {
             let rows = model.changes(minDelta: cutoff)
             VStack(spacing: 0) {

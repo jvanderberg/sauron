@@ -35,17 +35,18 @@ enum ScanStore {
         url(for: path).appendingPathExtension("prev")
     }
 
-    static func load(for path: String) -> (root: FileNode, scannedPath: String, date: Date)? {
+    typealias Loaded = (root: FileNode, scannedPath: String, date: Date, errorCount: Int)
+
+    static func load(for path: String) -> Loaded? {
         load(from: url(for: path), matching: path)
     }
 
     /// The generation before the current archive — the Changes baseline.
-    static func loadPrevious(for path: String) -> (root: FileNode, scannedPath: String, date: Date)? {
+    static func loadPrevious(for path: String) -> Loaded? {
         load(from: previousURL(for: path), matching: path)
     }
 
-    private static func load(from url: URL, matching path: String)
-        -> (root: FileNode, scannedPath: String, date: Date)? {
+    private static func load(from url: URL, matching path: String) -> Loaded? {
         guard let loaded = try? ScanArchive.load(from: url),
               Paths.canonical(loaded.scannedPath) == Paths.canonical(path)
         else { return nil }
@@ -56,7 +57,8 @@ enum ScanStore {
     /// archive becomes the Changes baseline. Incremental updates (trash
     /// operations, rescans) overwrite current in place so the baseline
     /// stays anchored to the last full scan.
-    static func save(root: FileNode, scannedPath: String, lock: NSLock, rotate: Bool) {
+    static func save(root: FileNode, scannedPath: String, errorCount: Int,
+                     lock: NSLock, rotate: Bool) {
         // Hold the lock only for a filtered copy (~10% of nodes); the slow
         // part — serialize + compress — runs on the private copy so UI
         // reads never block behind it.
@@ -70,7 +72,7 @@ enum ScanStore {
             try? FileManager.default.moveItem(at: current, to: previous)
         }
         try? ScanArchive.save(root: snapshot, scannedPath: scannedPath, date: Date(),
-                              to: current, minFileSize: 0)
+                              errorCount: errorCount, to: current, minFileSize: 0)
     }
 }
 
@@ -114,6 +116,16 @@ final class AppModel: ObservableObject {
     // BEFORE the current scan overwrote it.
     @Published var baselineDate: Date?
     private var baselineRoot: FileNode?
+    private var baselineErrorCount = 0
+
+    /// True when the baseline scan couldn't read substantially more folders
+    /// than the current one — e.g. it predates a Full Disk Access grant, so
+    /// now-readable items would show as "new" though nothing was added. A
+    /// diff across such a gap is meaningless, so the Changes view suppresses
+    /// it. -1 baseline errorCount = unknown (old archive) → treat as changed.
+    var baselineAccessChanged: Bool {
+        baselineErrorCount < 0 || baselineErrorCount > scanErrors + 25
+    }
 
     // Selection (single click). Marking for trash is a separate, explicit act.
     @Published var selected: FileNode?
@@ -253,8 +265,10 @@ final class AppModel: ObservableObject {
         guard let root, !isScanning, !isRescanning else { return }
         let path = scannedPath
         let lock = treeLock
+        let errors = scanErrors
         Task.detached(priority: .utility) { [weak self] in
-            ScanStore.save(root: root, scannedPath: path, lock: lock, rotate: rotate)
+            ScanStore.save(root: root, scannedPath: path, errorCount: errors,
+                           lock: lock, rotate: rotate)
             if rotate {
                 // The slots moved; the baseline is now the old current.
                 await MainActor.run { [weak self] in
@@ -386,6 +400,7 @@ final class AppModel: ObservableObject {
                 guard let self, self.scannedPath == path else { return }
                 self.baselineRoot = loaded.root
                 self.baselineDate = loaded.date
+                self.baselineErrorCount = loaded.errorCount
             }
         }
     }

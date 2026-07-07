@@ -106,7 +106,7 @@ case "archive":
     do {
         let result = try Scanner.scan(path: args[0])
         try ScanArchive.save(root: result.root, scannedPath: args[0], date: Date(),
-                             to: URL(fileURLWithPath: args[1]))
+                             errorCount: result.errorCount, to: URL(fileURLWithPath: args[1]))
         let attrs = try FileManager.default.attributesOfItem(atPath: args[1])
         let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
         print("archived \(result.entryCount) entries -> \(Format.bytes(bytes)) (\(bytes) bytes)")

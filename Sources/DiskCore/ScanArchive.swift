@@ -22,30 +22,36 @@ public enum ScanArchiveError: Error, CustomStringConvertible {
 /// (and archive size) drops by ~10x.
 public enum ScanArchive {
     private static let magic = Array("SAUR".utf8)
-    private static let version: UInt64 = 1
+    private static let version: UInt64 = 2
 
     public static func save(root: FileNode, scannedPath: String, date: Date,
+                            errorCount: Int = 0,
                             to url: URL, minFileSize: Int64 = 1_000_000) throws {
         var writer = Writer()
         writer.bytes(magic)
         writer.varint(version)
         writer.string(scannedPath)
         writer.varint(UInt64(max(0, date.timeIntervalSince1970)))
+        writer.varint(UInt64(max(0, errorCount)))
         encode(root, into: &writer, minFileSize: minFileSize)
         let compressed = try (writer.data as NSData).compressed(using: .lzfse)
         try (compressed as Data).write(to: url, options: .atomic)
     }
 
-    public static func load(from url: URL) throws -> (root: FileNode, scannedPath: String, date: Date) {
+    public static func load(from url: URL)
+        throws -> (root: FileNode, scannedPath: String, date: Date, errorCount: Int) {
         let raw = try Data(contentsOf: url)
         let data = try (raw as NSData).decompressed(using: .lzfse) as Data
         var reader = Reader(data)
         guard try reader.bytes(magic.count) == Data(magic) else { throw ScanArchiveError.corrupt }
-        guard try reader.varint() == version else { throw ScanArchiveError.unsupportedVersion }
+        let fileVersion = try reader.varint()
+        guard fileVersion == 1 || fileVersion == 2 else { throw ScanArchiveError.unsupportedVersion }
         let path = try reader.string()
         let date = Date(timeIntervalSince1970: TimeInterval(try reader.varint()))
+        // v1 archives predate error-count tracking; -1 means "unknown".
+        let errorCount = fileVersion >= 2 ? Int(try reader.varint()) : -1
         let root = try decode(&reader, parent: nil)
-        return (root, path, date)
+        return (root, path, date, errorCount)
     }
 
     private static func encode(_ node: FileNode, into writer: inout Writer, minFileSize: Int64) {
