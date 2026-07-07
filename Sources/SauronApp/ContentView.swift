@@ -255,8 +255,11 @@ struct ContentView: View {
     private var emptyState: some View {
         VStack(spacing: 26) {
             Spacer()
-            Text("Where did the space go?")
+            Text("Nothing escapes the Eye")
                 .font(.title2.bold())
+            Text("Point it at your disk and see where the space really went.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
             HStack(spacing: 16) {
                 scanChoice("house", "Scan Home",
                            "Your user folder — downloads, projects, caches, and everything else you own.",
