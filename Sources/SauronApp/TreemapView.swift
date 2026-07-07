@@ -40,6 +40,20 @@ struct TreemapView: View {
     @State private var lastSize = CGSize.zero
     @State private var duration: TimeInterval = 1.0
     @State private var easeOutMode = false
+
+    /// The outgoing level during a navigation zoom, driven through the same
+    /// transform so the map reads as one continuous surface: drilling down,
+    /// the old level magnifies off-screen around the expanding target;
+    /// going up, it shrinks back into its parent tile.
+    private struct Ghost {
+        let tile: TreemapTile
+        let start: CGRect
+        let end: CGRect
+    }
+    @State private var ghosts: [Ghost] = []
+    @State private var ghostsAbove = false
+    @State private var ghostsFade = false
+    @State private var ghostMaxSize: Int64 = 1
     @State private var isAnimating = false
     @State private var lastNode: FileNode?
     @State private var lastClickTime = Date.distantPast
@@ -59,6 +73,7 @@ struct TreemapView: View {
                 // frame drawn at any later date shows the final layout.
                 TimelineView(.animation(minimumInterval: nil, paused: !isAnimating)) { timeline in
                     canvas(frames: displayedFrames(at: timeline.date, size: geo.size),
+                           ghosts: ghostFrames(at: timeline.date),
                            settled: !isAnimating
                                || timeline.date.timeIntervalSince(animStart) >= duration)
                 }
@@ -269,30 +284,62 @@ struct TreemapView: View {
             return
         }
 
+        let outgoing = interpolatedFrames(at: Date())
+        let outgoingMax = targets.first?.size ?? 1
+
         if current.isDescendant(of: previous),
-           let container = interpolatedFrames(at: Date())
+           let container = outgoing
                .first(where: { current.isDescendant(of: $0.tile.node) })?.rect {
-            // Down: new level starts squeezed inside the clicked tile.
+            // Down: new level starts squeezed inside the clicked tile; the
+            // old level magnifies outward through the same transform and
+            // slides off-screen beneath it.
             var starts: [ObjectIdentifier: CGRect] = [:]
             for tile in newTargets { starts[tile.id] = squeeze(tile.rect, into: container, viewport: size) }
             beginAnimation(to: newTargets, origins: starts,
                            duration: Self.zoomDuration, easeOut: false)
+            ghosts = outgoing.map {
+                Ghost(tile: $0.tile, start: $0.rect,
+                      end: magnify($0.rect, from: container, viewport: size))
+            }
+            ghostsAbove = false
+            ghostsFade = false
+            ghostMaxSize = outgoingMax
         } else if previous.isDescendant(of: current),
                   let container = newTargets.first(where: { previous.isDescendant(of: $0.node) })?.rect {
             // Up: new level starts magnified so the tile we're leaving fills
-            // the viewport, then settles to identity.
+            // the viewport; the old level shrinks back into that tile on top.
             var starts: [ObjectIdentifier: CGRect] = [:]
             for tile in newTargets { starts[tile.id] = magnify(tile.rect, from: container, viewport: size) }
             beginAnimation(to: newTargets, origins: starts,
                            duration: Self.zoomDuration, easeOut: false)
+            ghosts = outgoing.map {
+                Ghost(tile: $0.tile, start: $0.rect,
+                      end: squeeze($0.rect, into: container, viewport: size))
+            }
+            ghostsAbove = true
+            ghostsFade = true
+            ghostMaxSize = outgoingMax
         } else {
             // Unrelated levels (new scan, cache swap): no zoom.
             setInstantly(newTargets)
         }
     }
 
+    private func ghostFrames(at date: Date) -> [TileFrame] {
+        guard !ghosts.isEmpty else { return [] }
+        let raw = date.timeIntervalSince(animStart) / max(duration, 0.001)
+        let t = max(0, min(1, raw))
+        guard t < 1 else { return [] }
+        let eased = t * t * (3 - 2 * t)
+        let opacity = ghostsFade ? Double(1 - eased) : 1
+        return ghosts.map {
+            TileFrame(tile: $0.tile, rect: lerp($0.start, $0.end, eased), opacity: opacity)
+        }
+    }
+
     private func setInstantly(_ newTargets: [TreemapTile]) {
         origins = [:]
+        ghosts = []
         animStart = .distantPast
         targets = newTargets
         isAnimating = false
@@ -302,6 +349,8 @@ struct TreemapView: View {
                                 origins newOrigins: [ObjectIdentifier: CGRect],
                                 duration newDuration: TimeInterval,
                                 easeOut: Bool) {
+        // Callers that want ghosts (navigation zooms) assign them after.
+        ghosts = []
         origins = newOrigins
         duration = newDuration
         easeOutMode = easeOut
@@ -377,7 +426,8 @@ struct TreemapView: View {
 
     // MARK: - Drawing
 
-    private func canvas(frames: [TileFrame], settled: Bool) -> some View {
+    private func canvas(frames: [TileFrame], ghosts ghostFrames: [TileFrame],
+                        settled: Bool) -> some View {
         let maxSize = frames.map(\.tile.size).max() ?? 1
         // Text resolution is the most expensive part of a frame; while tiles
         // are in motion, label only the big ones (small moving text is
@@ -385,6 +435,9 @@ struct TreemapView: View {
         let labelWidth: CGFloat = settled ? 60 : 110
         let labelHeight: CGFloat = settled ? 24 : 44
         return Canvas { context, _ in
+            if !ghostsAbove {
+                drawGhosts(ghostFrames, in: context, labelWidth: labelWidth, labelHeight: labelHeight)
+            }
             for frame in frames {
                 let inset = frame.rect.insetBy(dx: 0.5, dy: 0.5)
                 guard inset.width > 0, inset.height > 0 else { continue }
@@ -438,8 +491,39 @@ struct TreemapView: View {
                     context.draw(context.resolve(text), in: inset.insetBy(dx: 4, dy: 3))
                 }
             }
+            if ghostsAbove {
+                drawGhosts(ghostFrames, in: context, labelWidth: labelWidth, labelHeight: labelHeight)
+            }
         }
         .background(Color(nsColor: .underPageBackgroundColor))
+    }
+
+    /// The outgoing level during a navigation zoom: fills and labels only —
+    /// no selection, hover, or hatch decoration, and never hit-testable.
+    private func drawGhosts(_ ghostFrames: [TileFrame], in context: GraphicsContext,
+                            labelWidth: CGFloat, labelHeight: CGFloat) {
+        for frame in ghostFrames {
+            let inset = frame.rect.insetBy(dx: 0.5, dy: 0.5)
+            guard inset.width > 0, inset.height > 0 else { continue }
+            var (top, bottom) = heatColors(size: frame.tile.size, maxSize: ghostMaxSize,
+                                           isDirectory: frame.tile.node.isDirectory)
+            if frame.opacity < 1 {
+                top = top.opacity(frame.opacity)
+                bottom = bottom.opacity(frame.opacity)
+            }
+            let shape = Path(roundedRect: inset, cornerRadius: 2)
+            context.fill(shape, with: .linearGradient(
+                Gradient(colors: [top, bottom]),
+                startPoint: CGPoint(x: inset.midX, y: inset.minY),
+                endPoint: CGPoint(x: inset.midX, y: inset.maxY)))
+            if inset.width > labelWidth, inset.height > labelHeight, frame.opacity > 0.5 {
+                let name = frame.tile.node.isDirectory ? frame.tile.node.name + "/" : frame.tile.node.name
+                let text = Text("\(name)\n\(Format.bytes(frame.tile.size))")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.white.opacity(frame.opacity))
+                context.draw(context.resolve(text), in: inset.insetBy(dx: 4, dy: 3))
+            }
+        }
     }
 
     // MARK: - Menus & status
