@@ -31,22 +31,46 @@ enum ScanStore {
         (try? FileManager.default.attributesOfItem(atPath: url(for: path).path))?[.modificationDate] as? Date
     }
 
+    private static func previousURL(for path: String) -> URL {
+        url(for: path).appendingPathExtension("prev")
+    }
+
     static func load(for path: String) -> (root: FileNode, scannedPath: String, date: Date)? {
-        guard let loaded = try? ScanArchive.load(from: url(for: path)),
+        load(from: url(for: path), matching: path)
+    }
+
+    /// The generation before the current archive — the Changes baseline.
+    static func loadPrevious(for path: String) -> (root: FileNode, scannedPath: String, date: Date)? {
+        load(from: previousURL(for: path), matching: path)
+    }
+
+    private static func load(from url: URL, matching path: String)
+        -> (root: FileNode, scannedPath: String, date: Date)? {
+        guard let loaded = try? ScanArchive.load(from: url),
               Paths.canonical(loaded.scannedPath) == Paths.canonical(path)
         else { return nil }
         return loaded
     }
 
-    static func save(root: FileNode, scannedPath: String, lock: NSLock) {
+    /// rotate: a completed scan starts a new generation — the old current
+    /// archive becomes the Changes baseline. Incremental updates (trash
+    /// operations, rescans) overwrite current in place so the baseline
+    /// stays anchored to the last full scan.
+    static func save(root: FileNode, scannedPath: String, lock: NSLock, rotate: Bool) {
         // Hold the lock only for a filtered copy (~10% of nodes); the slow
         // part — serialize + compress — runs on the private copy so UI
         // reads never block behind it.
         lock.lock()
         let snapshot = root.filteredCopy(minFileSize: 1_000_000)
         lock.unlock()
+        let current = url(for: scannedPath)
+        if rotate, FileManager.default.fileExists(atPath: current.path) {
+            let previous = previousURL(for: scannedPath)
+            try? FileManager.default.removeItem(at: previous)
+            try? FileManager.default.moveItem(at: current, to: previous)
+        }
         try? ScanArchive.save(root: snapshot, scannedPath: scannedPath, date: Date(),
-                              to: url(for: scannedPath), minFileSize: 0)
+                              to: current, minFileSize: 0)
     }
 }
 
@@ -225,12 +249,19 @@ final class AppModel: ObservableObject {
 
     /// Snapshot the current tree to disk (serialized under the tree lock).
     /// Called after completed scans and after any operation that changes it.
-    private func persistScan() {
+    private func persistScan(rotate: Bool = false) {
         guard let root, !isScanning, !isRescanning else { return }
         let path = scannedPath
         let lock = treeLock
-        Task.detached(priority: .utility) {
-            ScanStore.save(root: root, scannedPath: path, lock: lock)
+        Task.detached(priority: .utility) { [weak self] in
+            ScanStore.save(root: root, scannedPath: path, lock: lock, rotate: rotate)
+            if rotate {
+                // The slots moved; the baseline is now the old current.
+                await MainActor.run { [weak self] in
+                    guard let self, self.scannedPath == path else { return }
+                    self.loadBaseline(for: path)
+                }
+            }
         }
     }
 
@@ -331,9 +362,8 @@ final class AppModel: ObservableObject {
                         self.showingCached = true
                         self.scanCache.store(root: loaded.root, path: loaded.scannedPath,
                                              complete: true, date: loaded.date)
-                        self.baselineRoot = loaded.root
-                        self.baselineDate = loaded.date
                     }
+                    self.loadBaseline(for: path)
                     self.launchScanTask(path: path)
                 }
             }
@@ -348,13 +378,25 @@ final class AppModel: ObservableObject {
 
     private func loadBaseline(for path: String) {
         Task.detached(priority: .utility) { [weak self] in
-            guard let loaded = ScanStore.load(for: path) else { return }
+            // The previous generation is the baseline; before a rotation
+            // exists (second-ever scan in flight), fall back to current.
+            guard let loaded = ScanStore.loadPrevious(for: path) ?? ScanStore.load(for: path)
+            else { return }
             await MainActor.run { [weak self] in
                 guard let self, self.scannedPath == path else { return }
                 self.baselineRoot = loaded.root
                 self.baselineDate = loaded.date
             }
         }
+    }
+
+    /// Exact net change since the baseline, from the root aggregates —
+    /// independent of the per-entry threshold and list cap.
+    func netChange() -> Int64? {
+        guard let baselineRoot, let root else { return nil }
+        treeLock.lock()
+        defer { treeLock.unlock() }
+        return root.size - baselineRoot.size
     }
 
     /// What changed since the baseline archive of this location. Computed on
@@ -497,7 +539,7 @@ final class AppModel: ObservableObject {
         rebuildQueue(fromPaths: stashedMarkedPaths)
         stashedMarkedPaths = []
         finishScan()
-        if !result.cancelled { persistScan() }
+        if !result.cancelled { persistScan(rotate: true) }
     }
 
     /// Replace the displayed (cached) tree with the freshly scanned one,

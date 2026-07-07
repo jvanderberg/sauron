@@ -62,6 +62,11 @@ struct ChangesView: View {
                 Text("Since \(date.formatted(date: .abbreviated, time: .shortened))")
                     .font(.system(size: 12, weight: .semibold))
             }
+            if let net = model.netChange() {
+                Text((net >= 0 ? "+" : "−") + Format.bytes(abs(net)) + " net")
+                    .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(net > 0 ? Color.red : net < 0 ? Color.green : Color.secondary)
+            }
             Text("≥ \(Format.bytes(cutoff))")
                 .font(.system(size: 12).monospacedDigit())
                 .foregroundStyle(.secondary)
