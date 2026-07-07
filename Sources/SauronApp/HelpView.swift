@@ -67,6 +67,8 @@ struct HelpView: View {
                 • The slider sets the minimum size; the list shows everything at or \
                 above it, sorted. Mark files for the Trash right from the list, or \
                 use Show in Map to jump to where a file lives.
+                • Keyboard: arrows move the selection, Space Quick Looks, ⌫ marks \
+                for the Trash, Return jumps to the file in the map.
                 """)
 
                 section("Trash", """

@@ -19,6 +19,7 @@ struct LargestFilesView: View {
     ]
 
     @State private var detentIndex: Double = 1
+    @State private var selectedPath: String?
 
     private var cutoff: Int64 {
         Self.detents[max(0, min(Self.detents.count - 1, Int(detentIndex.rounded())))]
@@ -40,10 +41,29 @@ struct LargestFilesView: View {
                 }
                 .frame(maxWidth: .infinity)
             } else {
-                List(rows, id: \.path) { row in
+                List(rows, id: \.path, selection: $selectedPath) { row in
                     fileRow(row)
                 }
                 .listStyle(.inset)
+                .onChange(of: selectedPath) { _, newPath in
+                    // Resolve via the model (never captured rows — stale
+                    // closures) so app-wide selection follows the list.
+                    guard let newPath, let root = model.root else { return }
+                    model.select(Paths.find(newPath, in: root))
+                }
+                .onKeyPress(.space) {
+                    model.quickLookSelection()
+                    return .handled
+                }
+                .onKeyPress(.delete) {
+                    model.toggleMarkSelection()
+                    return .handled
+                }
+                .onKeyPress(.return) {
+                    guard let selected = model.selected else { return .ignored }
+                    model.showInMap(selected)
+                    return .handled
+                }
             }
         }
         .onAppear {
