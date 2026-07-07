@@ -42,6 +42,21 @@ make app        # build Sauron.app, then: open Sauron.app
   to where one lives.
 - **⟳ Rescan** re-scans just the folder you're looking at and splices the
   fresh numbers into the tree — cheap truth-up after deletions, no full rescan.
+
+### Keyboard
+
+Tab focuses the map; from there it's fully hands-on-keyboard.
+
+| Key | Action |
+| --- | --- |
+| Tab | Focus the map (selects the largest tile) |
+| Arrows | Move between tiles / rows |
+| Return | Open a folder (map) · jump to the file (list) |
+| Esc or `/` | Go up a level |
+| Space | Quick Look the selection |
+| ⌫ | Mark / unmark for the Trash |
+| ⌘C / ⌥⌘C | Copy the item / copy its full path |
+| ⌘, · ⌘? | Settings · Help |
 - **Space** Quick Looks the selected item. The welcome screen lists every
   mounted volume with a capacity bar — click one to scan it (externals too).
 - **Delete Permanently…** skips the Trash entirely for the marked items —

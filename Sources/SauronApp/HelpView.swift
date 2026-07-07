@@ -45,12 +45,9 @@ struct HelpView: View {
                 Breadcrumbs and ↑ go back out.
                 • Right-click any tile for Mark/Unmark, Open, Copy, Copy Full \
                 Path, and Reveal in Finder.
-                • ⌘C copies the selected item (paste it in Finder); ⌥⌘C copies \
-                its full path as text. Space Quick Looks the selection.
-                • Full keyboard control: Tab focuses the map (selecting the \
-                largest tile), arrow keys move between tiles, Return opens a \
-                folder (or Quick Looks a file), Esc goes up a level.
                 """)
+
+                keyboardSection
 
                 section("Changes view", """
                 • The third switcher position compares this scan against the \
@@ -67,8 +64,6 @@ struct HelpView: View {
                 • The slider sets the minimum size; the list shows everything at or \
                 above it, sorted. Mark files for the Trash right from the list, or \
                 use Show in Map to jump to where a file lives.
-                • Keyboard: arrows move the selection, Space Quick Looks, ⌫ marks \
-                for the Trash, Return jumps to the file in the map.
                 """)
 
                 section("Trash", """
@@ -103,6 +98,38 @@ struct HelpView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.headline)
             Text(body).font(.system(size: 12)).lineSpacing(3)
+        }
+    }
+
+    private var keyboardSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Keyboard shortcuts").font(.headline)
+            Text("Tab focuses the map, then it's fully hands-on-keyboard.")
+                .font(.system(size: 12))
+            VStack(alignment: .leading, spacing: 3) {
+                shortcut("Tab", "Focus the map (selects the largest tile)")
+                shortcut("Arrows", "Move between tiles / rows")
+                shortcut("Return", "Open a folder — in the map; jump to the file — in the list")
+                shortcut("Esc  or  /", "Go up a level (map)")
+                shortcut("Space", "Quick Look the selection")
+                shortcut("⌫", "Mark / unmark for the Trash")
+                shortcut("⌘C", "Copy the selection (paste in Finder)")
+                shortcut("⌥⌘C", "Copy the full path as text")
+                shortcut("⌘,", "Settings")
+                shortcut("⌘?", "This help")
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    private func shortcut(_ keys: String, _ desc: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(keys)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .frame(width: 96, alignment: .leading)
+            Text(desc)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
         }
     }
 }

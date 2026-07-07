@@ -184,7 +184,9 @@ struct TreemapView: View {
                 model.quickLook(selected)
             }
             return .handled
-        case .escape:
+        case .escape, "/":
+            // "/" is an alternate "up" so the whole flow (arrows, Return,
+            // up) is reachable one-handed on the right of the keyboard.
             guard model.navigation.count > 1 else { return .ignored }
             let leaving = model.currentNode
             model.navigateUp()
