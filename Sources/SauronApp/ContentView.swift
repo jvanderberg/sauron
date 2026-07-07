@@ -147,12 +147,33 @@ struct ContentView: View {
                     }
                 }
             }
+            settingsButton
             toolbarButton("questionmark.circle", help: "Sauron Help (⌘?)") {
                 openWindow(id: "help")
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private var settingsButton: some View {
+        if #available(macOS 14.0, *) {
+            SettingsLink {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 30, height: 24)
+                    .contentShape(Rectangle())
+                    .help("Settings (⌘,)")
+            }
+            .buttonStyle(.borderless)
+            .focusable(false)
+            .help("Settings (⌘,)")
+        } else {
+            toolbarButton("gearshape", help: "Settings (⌘,)") {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+        }
     }
 
     private func toolbarButton(_ symbol: String, help: String,
