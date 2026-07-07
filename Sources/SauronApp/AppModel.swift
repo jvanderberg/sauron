@@ -534,9 +534,16 @@ final class AppModel: ObservableObject {
             root = result.root
             navigation = [result.root]
         }
-        // Restore marks (stashed at scan start) against whatever tree we
-        // ended up with; marks whose paths vanished are dropped.
-        rebuildQueue(fromPaths: stashedMarkedPaths)
+        // Restore marks against whatever tree we ended up with. Union the
+        // paths stashed at scan start with anything marked DURING the scan
+        // (while cached results were shown) — otherwise mid-scan marks are
+        // dropped on completion. Marks whose paths vanished fall away.
+        var order: [String] = []
+        var seen = Set<String>()
+        for p in stashedMarkedPaths + trashQueue.items.map(\.path) where seen.insert(p).inserted {
+            order.append(p)
+        }
+        rebuildQueue(fromPaths: order)
         stashedMarkedPaths = []
         finishScan()
         if !result.cancelled { persistScan(rotate: true) }
