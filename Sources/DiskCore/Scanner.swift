@@ -272,22 +272,35 @@ public enum Scanner {
         return FileNode(name: path, isDirectory: false, size: Int64(st.st_blocks) * 512)
     }
 
-    /// Directories we refuse to descend into because their enumeration can
-    /// hang indefinitely (see call site). Matching is deliberately narrow.
+    /// Directories we refuse to descend into: enumeration hazards (hung
+    /// cloud providers, dead mounts, autofs triggers that fire network
+    /// mount attempts) and non-actionable sibling system volumes that share
+    /// the root device. Matching is deliberately narrow — absolute paths at
+    /// shallow depth, plus CloudStorage at any depth.
     private static func shouldSkipDescent(_ ent: UnsafeMutablePointer<FTSENT>) -> Bool {
-        let nameLen = Int(ent.pointee.fts_namelen)
-        // Fast reject on name length before building any strings.
-        guard nameLen == 12 /* CloudStorage */ || nameLen == 7 /* Volumes */ else { return false }
-        let name = entName(ent)
-        if name == "CloudStorage" {
-            let path = String(cString: ent.pointee.fts_path)
-            return path.hasSuffix("/Library/CloudStorage")
+        // Cloud-provider roots (~/Library/CloudStorage) at any depth.
+        if Int(ent.pointee.fts_namelen) == 12, entName(ent) == "CloudStorage" {
+            return String(cString: ent.pointee.fts_path).hasSuffix("/Library/CloudStorage")
         }
-        if name == "Volumes" {
-            let path = String(cString: ent.pointee.fts_path)
-            return path == "/Volumes" || path == "/System/Volumes/Data/Volumes"
+        // Everything else lives within three levels of /.
+        guard Int(ent.pointee.fts_level) <= 3 else { return false }
+        let path = String(cString: ent.pointee.fts_path)
+        switch path {
+        case "/Volumes", "/System/Volumes/Data/Volumes",         // mount stubs
+             "/home", "/net",                                    // autofs triggers
+             "/System/Volumes/Data/home", "/System/Volumes/Data/net":
+            return true
+        default:
+            // Sibling system volumes (Recovery, BaseSystem, FieldService*…)
+            // can share the root device, so FTS_XDEV doesn't stop them.
+            // Everything under /System/Volumes except Data is off-limits.
+            if path.hasPrefix("/System/Volumes/"),
+               !path.dropFirst("/System/Volumes/".count).contains("/"),
+               path != "/System/Volumes/Data" {
+                return true
+            }
+            return false
         }
-        return false
     }
 
     private static func physicalSize(_ ent: UnsafeMutablePointer<FTSENT>) -> Int64 {
